@@ -1,0 +1,85 @@
+---
+title: "Testicular cell atlas"
+author: "Jarning"
+date: "2022/1/6"
+output: html_document
+---
+
+```{r setup}
+options(readr.show_col_types = FALSE, stringsAsFactors = FALSE)
+library(biomaRt)
+library(tidyverse)
+```
+
+
+```{r}
+ensembl <- useEnsembl(biomart = "ENSEMBL_MART_ENSEMBL", version = 98)
+hg38.ens <- useDataset(dataset = "hsapiens_gene_ensembl", mart = ensembl, verbose = 98)
+mm10.ens <- useDataset(dataset = "mmusculus_gene_ensembl", mart = ensembl, verbose = 98)
+
+################################################################################
+## For hg38
+features <- read.table("../data/gene_set/features.human.tsv", header = F, sep = "\t",
+                       col.names = c("Ensembl.ID", "Symbol", "Class"))
+dup.symbols <- subset(features, duplicated(Symbol))$Symbol
+features <- features |> 
+  mutate(uniqName = ifelse(Symbol %in% dup.symbols, paste0(Ensembl.ID,"|",Symbol), Symbol))
+
+results <- getBM(attributes = c('ensembl_gene_id', 'gene_biotype', 'chromosome_name'),
+                 filters = 'ensembl_gene_id',
+                 values = features$Ensembl.ID, 
+                 mart = hg38.ens)
+rownames(results) <- results$ensembl_gene_id
+
+features$biotype <- results[features$Ensembl.ID, ]$gene_biotype
+features$chromosome <- results[features$Ensembl.ID, ]$chromosome_name
+saveRDS(features, "../data/gene_set/features.GRCh38.ens98.rds")
+
+features <- readRDS("../data/gene_set/features.GRCh38.ens98.rds")
+
+ribo.genes <- readLines("../data/gene_set/MSigDB_GO_ribosomal_subunit.txt")
+ribo.genes <- intersect(ribo.genes, features$uniqName)
+writeLines(ribo.genes, "../data/gene_set/MSigDB_GO_ribosomal_subunit.txt")
+
+chrX.genes <- subset(features, chromosome == "X")$uniqName
+chrY.genes <- subset(features, chromosome == "Y")$uniqName
+writeLines(chrX.genes, "../data/gene_set/GRCh38.ens98.chrX.genes.txt")
+writeLines(chrY.genes, "../data/gene_set/GRCh38.ens98.chrY.genes.txt")
+
+################################################################################
+## For mm10
+features <- read.table("../data/gene_set/features.mouse.tsv", header = F, sep = "\t",
+                       col.names = c("Ensembl.ID", "Symbol", "Class"))
+dup.symbols <- subset(features, duplicated(Symbol))$Symbol
+features <- features |> 
+  mutate(uniqName = ifelse(Symbol %in% dup.symbols, paste0(Ensembl.ID,"|",Symbol), Symbol))
+
+results <- getBM(attributes = c('ensembl_gene_id', 'gene_biotype', 'chromosome_name'),
+                 filters = 'ensembl_gene_id',
+                 values = features$Ensembl.ID, 
+                 mart = mm10.ens)
+rownames(results) <- results$ensembl_gene_id
+
+features$biotype <- results[features$Ensembl.ID, ]$gene_biotype
+features$chromosome <- results[features$Ensembl.ID, ]$chromosome_name
+saveRDS(features, "../data/gene_set/features.mm10.ens98.rds")
+
+ribo.genes <- readLines("../data/gene_set/MGI_GO_ribosomal_subunit.txt")
+ribo.genes <- intersect(ribo.genes, features$uniqName)
+writeLines(ribo.genes, "../data/gene_set/MGI_GO_ribosomal_subunit.txt")
+
+chrX.genes <- subset(features, chromosome == "X")$uniqName
+chrY.genes <- subset(features, chromosome == "Y")$uniqName
+writeLines(chrX.genes, "../data/gene_set/mm10.ens98.chrX.genes.txt")
+writeLines(chrY.genes, "../data/gene_set/mm10.ens98.chrY.genes.txt")
+```
+
+
+```{r}
+features <- readRDS("../data/gene_set/features.GRCh38.ens98.rds")
+write_tsv(features, "../data/gene_set/features.GRCh38.ens98.tsv")
+
+features <- readRDS("../data/gene_set/features.mm10.ens98.rds")
+write_tsv(features, "../data/gene_set/features.mm10.ens98.tsv")
+```
+

@@ -1,0 +1,988 @@
+---
+title: "Testicular cell atlas"
+author: "Jarning"
+date: "2022/1/1"
+output: html_document
+---
+
+## setup code
+
+```{r setup}
+pacman::p_unload(pacman::p_loaded(), character.only = TRUE)
+options(stringsAsFactors = FALSE)
+library(here)
+library(Seurat, lib.loc = "/home/software/R/seuratV3_env/")
+library(SeuratWrappers)
+library(tidyverse)
+source("R/utils.R")
+source("R/02.preprocess.utils.R")
+
+# global vars
+OUTDIR <- "../results/02.preprocess_mouse"
+safe_mkdir(OUTDIR)
+
+# check all mouse datasets
+datasets <- list.dirs("../data/matrix", recursive = F, full.names = F)
+datasets[grep("*mouse*", datasets)]
+```
+
+
+## Cell.Rep_2018_mouse_GSE109033
+
+### 1) load data
+```{r}
+gse_dataset = "Cell.Rep_2018_mouse_GSE109033"
+seu <- load_dataset(gse_dataset, species = "mouse")
+```
+
+### 2) filter cells
+```{r, fig.width=20, fig.height=9}
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = T)
+
+seu <- subset(seu, nFeature_RNA >= 500 & percent.mt <= 15)
+
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = F)
+```
+
+### 3) add cell metadata
+```{r}
+# run umap and cluster
+seu <- seurat_one_step(seu, outpath = OUTDIR)
+
+# add metadata
+seu <- add_metadata(seu)
+
+# show embeddings
+FeaturePlot(seu, features = "decontX_contamination")
+DimPlot(seu, group.by = "Sample_name", label = T)
+DimPlot(seu, label = T)
+
+
+# save data
+obj.name <- paste0(seu@project.name, ".seu.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+### 4) step1 clustering
+
+```{r}
+## remove bad clusters
+drop.clusters <- c(0,4,5,8,9,15,21) # high percent.mt and low genes, multiple markers
+seu <- subset(seu, RNA_snn_res.1 %notin% drop.clusters)
+seu <- subset(seu, percent.mt <= 10)
+
+## remove doublets
+seu <- DF_main(seu, split.by = "GSM_ID")
+seu <- subset(seu, DF.classifications == "Singlet")
+seu$DF.classifications <- NULL
+
+## re-run the seurat pipeline
+seu <- RunUMAP(seu, reduction = "mnn", dims = 1:30)
+seu <- seu %>% 
+    FindNeighbors(dims = 1:30, reduction = "mnn", k.param = 20, verbose = FALSE) %>% 
+    FindClusters(resolution = 2, verbose = FALSE)
+DimPlot(seu, group.by = "RNA_snn_res.2", label = T)
+drop.clusters <- c(43,40,39) # high percent.mt and low genes, multiple markers
+seu <- subset(seu, RNA_snn_res.2 %notin% drop.clusters)
+
+seu$seurat_clusters <- NULL
+
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+```{r}
+gse_dataset = "Cell.Rep_2018_mouse_GSE109033"
+seu.raw <- load_dataset(gse_dataset, species = "mouse")
+
+## add new cell meta
+obj.name <- paste0(gse_dataset, ".seu.rds")
+obj.name
+seu <- readRDS(file.path(OUTDIR, obj.name))
+new.meta <- seu@meta.data
+new.meta <- new.meta |>
+  mutate(percent.chrX = seu.raw$percent.chrX[rownames(new.meta)],
+         percent.chrY = seu.raw$percent.chrY[rownames(new.meta)],
+         decontX_contamination = seu.raw$decontX_contamination[rownames(new.meta)],
+         .after="percent.ribo")
+seu@meta.data <- new.meta
+saveRDS(seu, file.path(OUTDIR, obj.name))
+
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+obj.name
+seu <- readRDS(file.path(OUTDIR, obj.name))
+new.meta <- seu@meta.data
+new.meta <- new.meta |>
+  mutate(percent.chrX = seu.raw$percent.chrX[rownames(new.meta)],
+         percent.chrY = seu.raw$percent.chrY[rownames(new.meta)],
+         decontX_contamination = seu.raw$decontX_contamination[rownames(new.meta)],
+         .after="percent.ribo")
+seu@meta.data <- new.meta
+saveRDS(seu, file.path(OUTDIR, obj.name))
+rm("seu.raw")
+```
+
+## Cell.Res_2018_mouse_GSE107644
+
+### 1) load data
+```{r}
+gse_dataset = "Cell.Res_2018_mouse_GSE107644"
+seu <- load_dataset(gse_dataset, species = "mouse")
+```
+
+### 2) filter cells
+```{r, fig.width=20, fig.height=9}
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = T)
+
+seu <- subset(seu, nFeature_RNA >= 1000 & percent.mt <= 10)
+
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = F)
+```
+
+
+### 3) add cell metadata
+```{r}
+# run umap and cluster
+seu <- seurat_one_step(seu, outpath = result.path)
+
+# add metadata
+seu <- add_metadata(seu)
+
+## add published cell type
+pub.ct <- read.table(paste(path, "cell_type_published.txt", sep = "/"), 
+                     sep = "\t", header = F, 
+                     col.names = c("cellID", "cell_type"))
+
+metadata.new <- seu@meta.data
+
+metadata.new$Cell_type_published <- mapvalues.2(x = rownames(metadata.new), 
+                                                from = pub.ct$cellID, 
+                                                to = pub.ct$cell_type)
+seu@meta.data <- metadata.new
+
+# show embeddings
+FeaturePlot(seu, features = "decontX_contamination")
+DimPlot(seu, group.by = "Sample_name", label = T)
+DimPlot(seu, label = T)
+
+cells.use <- rownames(subset(seu@meta.data, !is.na(Cell_type_published)))
+seu <- subset(seu, cells = cells.use)
+cells.use <- rownames(subset(seu@meta.data, Cell_type_published %notin% c("Sox30KORS2o3","Spo11KOL1")))
+seu <- subset(seu, cells = cells.use)
+
+# save data
+obj.name <- paste0(seu@project.name, ".seu.hc.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+```{r}
+gse_dataset = "Cell.Res_2018_mouse_GSE107644"
+seu.raw <- load_dataset(gse_dataset, species = "mouse")
+
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+obj.name
+seu <- readRDS(file.path(OUTDIR, obj.name))
+new.meta <- seu@meta.data
+new.meta <- new.meta |>
+  mutate(percent.chrX = seu.raw$percent.chrX[rownames(new.meta)],
+         percent.chrY = seu.raw$percent.chrY[rownames(new.meta)],
+         decontX_contamination = seu.raw$decontX_contamination[rownames(new.meta)],
+         .after="percent.ribo")
+seu@meta.data <- new.meta
+saveRDS(seu, file.path(OUTDIR, obj.name))
+rm("seu.raw")
+```
+
+## Dev.Cell_2018_mouse_GSE112393
+
+### 1) load data
+```{r}
+gse_dataset = "Dev.Cell_2018_mouse_GSE112393"
+seu <- load_dataset(gse_dataset, species = "mouse")
+```
+
+### 2) filter cells
+```{r, fig.width=20, fig.height=9}
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = T)
+
+seu <- subset(seu, nFeature_RNA >= 500 & percent.mt <= 15)
+
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = F)
+```
+
+### 3) add cell metadata
+```{r}
+# run umap and cluster
+seu <- seurat_one_step(seu, outpath = result.path)
+
+# add metadata
+seu <- add_metadata(seu)
+
+# show embeddings
+FeaturePlot(seu, features = "decontX_contamination")
+DimPlot(seu, group.by = "Sample_name", label = T)
+DimPlot(seu, label = T)
+
+## add published cell type
+INDIR = here("data/matrix", gse_dataset)
+pub.ct <- read.table(file.path(INDIR, "cell_type_published.txt"), sep = "\t", header = F, 
+                     col.names = c("cellID", "cell_type"))
+metadata.new <- seu@meta.data
+metadata.new$Cell_type_published <- mapvalues.2(x = rownames(metadata.new), 
+                                                from = pub.ct$cellID, 
+                                                to = pub.ct$cell_type)
+seu@meta.data <- metadata.new
+
+# save data
+obj.name <- paste0(seu@project.name, ".seu.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+### 4) step1 clustering
+
+```{r}
+## remove bad clusters
+drop.clusters <- c(15) # high percent.mt and low genes, multiple markers
+seu <- subset(seu, RNA_snn_res.1 %notin% drop.clusters)
+seu <- subset(seu, percent.mt <= 10)
+
+## remove doublets
+seu <- DF_main(seu, split.by = "GSM_ID")
+seu <- subset(seu, DF.classifications == "Singlet")
+seu$DF.classifications <- NULL
+
+## re-run the seurat pipeline
+seu <- RunUMAP(seu, reduction = "mnn", dims = 1:30)
+seu <- seu %>% 
+    FindNeighbors(dims = 1:30, reduction = "mnn", k.param = 20, verbose = FALSE) %>% 
+    FindClusters(resolution = 2, verbose = FALSE)
+
+drop.clusters <- c(34,21,9,23,14,17,28) # high percent.mt and low genes, multiple markers
+seu <- subset(seu, RNA_snn_res.2 %notin% drop.clusters)
+
+## re-run the seurat pipeline
+seu <- RunUMAP(seu, reduction = "mnn", dims = 1:30)
+seu <- seu %>% 
+    FindNeighbors(dims = 1:30, reduction = "mnn", k.param = 10, verbose = FALSE) %>% 
+    FindClusters(resolution = 2, verbose = FALSE)
+
+drop.clusters <- c(33) # high percent.mt and low genes, multiple markers
+seu <- subset(seu, RNA_snn_res.2 %notin% drop.clusters)
+
+seu$seurat_clusters <- NULL
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+```{r}
+gse_dataset = "Dev.Cell_2018_mouse_GSE112393"
+seu.raw <- load_dataset(gse_dataset, species = "mouse")
+
+## add new cell meta
+obj.name <- paste0(gse_dataset, ".seu.rds")
+obj.name
+seu <- readRDS(file.path(OUTDIR, obj.name))
+new.meta <- seu@meta.data
+new.meta <- new.meta |>
+  mutate(percent.chrX = seu.raw$percent.chrX[rownames(new.meta)],
+         percent.chrY = seu.raw$percent.chrY[rownames(new.meta)],
+         decontX_contamination = seu.raw$decontX_contamination[rownames(new.meta)],
+         .after="percent.ribo")
+seu@meta.data <- new.meta
+saveRDS(seu, file.path(OUTDIR, obj.name))
+
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+obj.name
+seu <- readRDS(file.path(OUTDIR, obj.name))
+new.meta <- seu@meta.data
+new.meta <- new.meta |>
+  mutate(percent.chrX = seu.raw$percent.chrX[rownames(new.meta)],
+         percent.chrY = seu.raw$percent.chrY[rownames(new.meta)],
+         decontX_contamination = seu.raw$decontX_contamination[rownames(new.meta)],
+         .after="percent.ribo")
+seu@meta.data <- new.meta
+saveRDS(seu, file.path(OUTDIR, obj.name))
+rm("seu.raw")
+```
+
+## Nat.Com_2019_mouse_E-MTAB-6946
+
+### 1) load data
+```{r}
+gse_dataset = "Nat.Com_2019_mouse_E-MTAB-6946"
+seu <- load_dataset(gse_dataset, species = "mouse")
+```
+
+### 2) filter cells
+```{r, fig.width=20, fig.height=9}
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = T)
+
+seu <- subset(seu, nFeature_RNA >= 500 & percent.mt <= 15)
+
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = F)
+```
+
+### 3) add cell metadata
+```{r}
+# run umap and cluster
+seu <- seurat_one_step(seu, outpath = result.path)
+
+# add metadata
+seu <- add_metadata(seu)
+
+# show embeddings
+FeaturePlot(seu, features = "decontX_contamination")
+DimPlot(seu, group.by = "Sample_name", label = T)
+DimPlot(seu, label = T)
+
+## add published cell type
+INDIR = here("data/matrix", gse_dataset)
+pub.ct <- read.table(file.path(INDIR, "cell_type_published.txt"), sep = "\t", header = F, 
+                     col.names = c("cellID", "cell_type"))
+
+metadata.new <- seu@meta.data
+
+metadata.new$Cell_type_published <- mapvalues.2(x = rownames(metadata.new), 
+                                                from = pub.ct$cellID, 
+                                                to = pub.ct$cell_type)
+seu@meta.data <- metadata.new
+
+seu <- subset(seu, Genotype == "WT")
+
+# save data
+obj.name <- paste0(seu@project.name, ".seu.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+```{r}
+DimPlot(seu, group.by = "Cell_type_published", label = T) + NoLegend()
+```
+
+### 4) step1 clustering
+
+```{r}
+source("03.remove_doublets.R")
+
+gse_dataset = "Nat.Com_2019_mouse_E-MTAB-6946"
+obj.name <- paste0(gse_dataset, ".seu.rds")
+seu <- readRDS(file.path(result.path, obj.name))
+
+## remove bad clusters
+drop.clusters <- c(6,19,21,25) # high percent.mt and low genes, multiple markers
+seu <- subset(seu, RNA_snn_res.1 %notin% drop.clusters)
+seu <- subset(seu, percent.mt <= 10)
+
+## remove doublets
+seu <- DF_main(seu, split.by = "GSM_ID")
+seu <- subset(seu, DF.classifications == "Singlet")
+seu$DF.classifications <- NULL
+
+## re-run the seurat pipeline
+seu <- RunUMAP(seu, reduction = "mnn", dims = 1:30)
+seu <- seu %>% 
+    FindNeighbors(dims = 1:30, reduction = "mnn", k.param = 20, verbose = FALSE) %>% 
+    FindClusters(resolution = 2, verbose = FALSE)
+
+drop.clusters <- c(50,56,53,46) # high percent.mt and low genes, multiple markers
+seu <- subset(seu, RNA_snn_res.2 %notin% drop.clusters)
+
+## re-run the seurat pipeline
+seu <- RunUMAP(seu, reduction = "mnn", dims = 1:30)
+seu <- seu %>% 
+    FindNeighbors(dims = 1:30, reduction = "mnn", k.param = 20, verbose = FALSE) %>% 
+    FindClusters(resolution = 2, verbose = FALSE)
+
+drop.clusters <- c(54) # high percent.mt and low genes, multiple markers
+seu <- subset(seu, RNA_snn_res.2 %notin% drop.clusters)
+
+seu$seurat_clusters <- NULL
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+
+```{r}
+gse_dataset = "Nat.Com_2019_mouse_E-MTAB-6946"
+seu.raw <- load_dataset(gse_dataset, species = "mouse")
+
+## add new cell meta
+obj.name <- paste0(gse_dataset, ".seu.rds")
+obj.name
+seu <- readRDS(file.path(OUTDIR, obj.name))
+new.meta <- seu@meta.data
+new.meta <- new.meta |>
+  mutate(percent.chrX = seu.raw$percent.chrX[rownames(new.meta)],
+         percent.chrY = seu.raw$percent.chrY[rownames(new.meta)],
+         decontX_contamination = seu.raw$decontX_contamination[rownames(new.meta)],
+         .after="percent.ribo")
+seu@meta.data <- new.meta
+saveRDS(seu, file.path(OUTDIR, obj.name))
+
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+obj.name
+seu <- readRDS(file.path(OUTDIR, obj.name))
+new.meta <- seu@meta.data
+new.meta <- new.meta |>
+  mutate(percent.chrX = seu.raw$percent.chrX[rownames(new.meta)],
+         percent.chrY = seu.raw$percent.chrY[rownames(new.meta)],
+         decontX_contamination = seu.raw$decontX_contamination[rownames(new.meta)],
+         .after="percent.ribo")
+seu@meta.data <- new.meta
+saveRDS(seu, file.path(OUTDIR, obj.name))
+rm("seu.raw")
+```
+
+## Nat.Com_2019_mouse_GSE124904
+
+### 1) load data
+```{r}
+gse_dataset = "Nat.Com_2019_mouse_GSE124904"
+seu <- load_dataset(gse_dataset, species = "mouse")
+```
+
+### 2) filter cells
+```{r, fig.width=20, fig.height=9}
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = T)
+
+seu <- subset(seu, nFeature_RNA >= 500 & percent.mt <= 15)
+
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = F)
+```
+
+### 3) add cell metadata
+```{r}
+# run umap and cluster
+seu <- seurat_one_step(seu, outpath = result.path)
+
+# add metadata
+seu <- add_metadata(seu)
+
+# show embeddings
+FeaturePlot(seu, features = "decontX_contamination")
+DimPlot(seu, group.by = "Sample_name", label = T)
+DimPlot(seu, label = T)
+
+# save data
+obj.name <- paste0(seu@project.name, ".seu.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+### 4) step1 clustering
+
+```{r}
+##
+Idents(seu) <- seu$RNA_snn_res.1
+markers.1 <- mcFindAllMarkers(seu, n.cores = 20)
+
+## remove bad clusters
+drop.clusters <- c(7,10) # high percent.mt and low genes, multiple markers
+seu <- subset(seu, RNA_snn_res.1 %notin% drop.clusters)
+seu <- subset(seu, percent.mt <= 10)
+
+## remove doublets
+seu <- DF_main(seu, split.by = "GSM_ID")
+seu <- subset(seu, DF.classifications == "Singlet")
+seu$DF.classifications <- NULL
+
+## re-run the seurat pipeline
+seu <- RunUMAP(seu, reduction = "mnn", dims = 1:30)
+seu <- seu %>% 
+    FindNeighbors(dims = 1:30, reduction = "mnn", k.param = 20, verbose = FALSE) %>% 
+    FindClusters(resolution = 2, verbose = FALSE)
+
+seu$seurat_clusters <- NULL
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+```{r}
+gse_dataset = "Nat.Com_2019_mouse_GSE124904"
+seu.raw <- load_dataset(gse_dataset, species = "mouse")
+
+## add new cell meta
+obj.name <- paste0(gse_dataset, ".seu.rds")
+obj.name
+seu <- readRDS(file.path(OUTDIR, obj.name))
+new.meta <- seu@meta.data
+new.meta <- new.meta |>
+  mutate(percent.chrX = seu.raw$percent.chrX[rownames(new.meta)],
+         percent.chrY = seu.raw$percent.chrY[rownames(new.meta)],
+         decontX_contamination = seu.raw$decontX_contamination[rownames(new.meta)],
+         .after="percent.ribo")
+seu@meta.data <- new.meta
+saveRDS(seu, file.path(OUTDIR, obj.name))
+
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+obj.name
+seu <- readRDS(file.path(OUTDIR, obj.name))
+new.meta <- seu@meta.data
+new.meta <- new.meta |>
+  mutate(percent.chrX = seu.raw$percent.chrX[rownames(new.meta)],
+         percent.chrY = seu.raw$percent.chrY[rownames(new.meta)],
+         decontX_contamination = seu.raw$decontX_contamination[rownames(new.meta)],
+         .after="percent.ribo")
+seu@meta.data <- new.meta
+saveRDS(seu, file.path(OUTDIR, obj.name))
+rm("seu.raw")
+```
+
+## Plos.Gen_2019_mouse_GSE121904
+
+### 1) load data
+```{r}
+gse_dataset = "Plos.Gen_2019_mouse_GSE121904"
+seu <- load_dataset(gse_dataset, species = "mouse")
+```
+
+### 2) filter cells
+```{r, fig.width=20, fig.height=9}
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = T)
+
+seu <- subset(seu, nFeature_RNA >= 500 & percent.mt <= 15)
+
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = F)
+```
+
+### 3) add cell metadata
+```{r}
+# run umap and cluster
+seu <- seurat_one_step(seu, outpath = result.path)
+
+# add metadata
+seu <- add_metadata(seu)
+
+# show embeddings
+FeaturePlot(seu, features = "decontX_contamination")
+DimPlot(seu, group.by = "Sample_name", label = T)
+DimPlot(seu, label = T)
+
+# save data
+obj.name <- paste0(seu@project.name, ".seu.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+### 4) step1 clustering
+
+```{r}
+##
+Idents(seu) <- seu$RNA_snn_res.1
+markers.1 <- mcFindAllMarkers(seu, n.cores = 20)
+
+## remove bad clusters
+drop.clusters <- c(1,14,20) # high percent.mt and low genes, multiple markers
+seu <- subset(seu, RNA_snn_res.1 %notin% drop.clusters)
+seu <- subset(seu, percent.mt <= 10)
+
+## remove doublets
+seu <- DF_main(seu, split.by = "GSM_ID")
+seu <- subset(seu, DF.classifications == "Singlet")
+seu$DF.classifications <- NULL
+
+## re-run the seurat pipeline
+seu <- RunUMAP(seu, reduction = "mnn", dims = 1:30)
+seu <- seu %>% 
+    FindNeighbors(dims = 1:30, reduction = "mnn", k.param = 20, verbose = FALSE) %>% 
+    FindClusters(resolution = 2, verbose = FALSE)
+
+drop.clusters <- c(22,25,42,47,46) # high percent.mt and low genes, multiple markers
+seu <- subset(seu, RNA_snn_res.2 %notin% drop.clusters)
+
+## re-run the seurat pipeline
+seu <- RunUMAP(seu, reduction = "mnn", dims = 1:30, n.neighbors = 100)
+seu <- seu %>% 
+    FindNeighbors(dims = 1:30, reduction = "mnn", k.param = 20, verbose = FALSE) %>% 
+    FindClusters(resolution = 2, verbose = FALSE)
+
+drop.clusters <- c(10,16) # high percent.mt and low genes, multiple markers
+seu <- subset(seu, RNA_snn_res.2 %notin% drop.clusters)
+
+## re-run the seurat pipeline
+seu <- RunUMAP(seu, reduction = "mnn", dims = 1:30, n.neighbors = 100)
+seu <- seu %>% 
+    FindNeighbors(dims = 1:30, reduction = "mnn", k.param = 20, verbose = FALSE) %>% 
+    FindClusters(resolution = 2, verbose = FALSE)
+
+drop.clusters <- c(41) # high percent.mt and low genes, multiple markers
+seu <- subset(seu, RNA_snn_res.2 %notin% drop.clusters)
+
+seu$seurat_clusters <- NULL
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+```{r}
+gse_dataset = "Plos.Gen_2019_mouse_GSE121904"
+seu.raw <- load_dataset(gse_dataset, species = "mouse")
+
+## add new cell meta
+obj.name <- paste0(gse_dataset, ".seu.rds")
+obj.name
+seu <- readRDS(file.path(OUTDIR, obj.name))
+new.meta <- seu@meta.data
+new.meta <- new.meta |>
+  mutate(percent.chrX = seu.raw$percent.chrX[rownames(new.meta)],
+         percent.chrY = seu.raw$percent.chrY[rownames(new.meta)],
+         decontX_contamination = seu.raw$decontX_contamination[rownames(new.meta)],
+         .after="percent.ribo")
+seu@meta.data <- new.meta
+saveRDS(seu, file.path(OUTDIR, obj.name))
+
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+obj.name
+seu <- readRDS(file.path(OUTDIR, obj.name))
+new.meta <- seu@meta.data
+new.meta <- new.meta |>
+  mutate(percent.chrX = seu.raw$percent.chrX[rownames(new.meta)],
+         percent.chrY = seu.raw$percent.chrY[rownames(new.meta)],
+         decontX_contamination = seu.raw$decontX_contamination[rownames(new.meta)],
+         .after="percent.ribo")
+seu@meta.data <- new.meta
+saveRDS(seu, file.path(OUTDIR, obj.name))
+rm("seu.raw")
+```
+
+## Elife_2019_mouse_GSE113293
+
+### 1) load data
+```{r}
+gse_dataset = "Elife_2019_mouse_GSE113293"
+seu <- load_dataset(gse_dataset, species = "mouse")
+```
+
+### 2) filter cells
+```{r, fig.width=20, fig.height=9}
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = T)
+
+seu <- subset(seu, nFeature_RNA >= 500 & percent.mt <= 15)
+
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = F)
+```
+
+### 3) add cell metadata
+```{r}
+# run umap and cluster
+seu <- seurat_one_step(seu, outpath = result.path)
+
+# add metadata
+seu <- add_metadata(seu)
+seu <- subset(seu, Genotype == "WT")
+
+# show embeddings
+FeaturePlot(seu, features = "decontX_contamination")
+DimPlot(seu, group.by = "Sample_name", label = T)
+DimPlot(seu, label = T)
+
+# save data
+obj.name <- paste0(seu@project.name, ".seu.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+### 4) step1 clustering
+
+```{r}
+##
+Idents(seu) <- seu$RNA_snn_res.1
+markers.1 <- FindMarkers(seu, ident.1 = 1, only.pos = T)
+
+## remove bad clusters
+drop.clusters <- c(1) # high percent.mt and low genes, multiple markers
+seu <- subset(seu, RNA_snn_res.1 %notin% drop.clusters)
+seu <- subset(seu, percent.mt <= 10)
+
+## remove doublets
+# seu <- DF_main(seu, split.by = "GSM_ID")
+# seu <- subset(seu, DF.classifications == "Singlet")
+# seu$DF.classifications <- NULL
+
+## re-run the seurat pipeline
+seu <- RunUMAP(seu, reduction = "mnn", dims = 1:30)
+seu <- seu %>% 
+    FindNeighbors(dims = 1:30, reduction = "mnn", k.param = 20, verbose = FALSE) %>% 
+    FindClusters(resolution = 2, verbose = FALSE)
+
+seu$seurat_clusters <- NULL
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+```{r}
+gse_dataset = "Elife_2019_mouse_GSE113293"
+seu.raw <- load_dataset(gse_dataset, species = "mouse")
+
+## add new cell meta
+obj.name <- paste0(gse_dataset, ".seu.rds")
+obj.name
+seu <- readRDS(file.path(OUTDIR, obj.name))
+new.meta <- seu@meta.data
+new.meta <- new.meta |>
+  mutate(percent.chrX = seu.raw$percent.chrX[rownames(new.meta)],
+         percent.chrY = seu.raw$percent.chrY[rownames(new.meta)],
+         decontX_contamination = seu.raw$decontX_contamination[rownames(new.meta)],
+         .after="percent.ribo")
+seu@meta.data <- new.meta
+saveRDS(seu, file.path(OUTDIR, obj.name))
+
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+obj.name
+seu <- readRDS(file.path(OUTDIR, obj.name))
+new.meta <- seu@meta.data
+new.meta <- new.meta |>
+  mutate(percent.chrX = seu.raw$percent.chrX[rownames(new.meta)],
+         percent.chrY = seu.raw$percent.chrY[rownames(new.meta)],
+         decontX_contamination = seu.raw$decontX_contamination[rownames(new.meta)],
+         .after="percent.ribo")
+seu@meta.data <- new.meta
+saveRDS(seu, file.path(OUTDIR, obj.name))
+rm("seu.raw")
+```
+
+## Dev_2020_mouse_GSE130593
+
+### 1) load data
+```{r}
+gse_dataset = "Dev_2020_mouse_GSE130593"
+seu <- load_dataset(gse_dataset, species = "mouse")
+```
+
+### 2) filter cells
+```{r, fig.width=20, fig.height=9}
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = T)
+
+seu <- subset(seu, nFeature_RNA >= 500 & percent.mt <= 15)
+
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = F)
+```
+
+### 3) add cell metadata
+```{r}
+# run umap and cluster
+seu <- seurat_one_step(seu, outpath = result.path)
+
+# add metadata
+seu <- add_metadata(seu)
+
+# show embeddings
+FeaturePlot(seu, features = "decontX_contamination")
+DimPlot(seu, group.by = "Sample_name", label = T)
+DimPlot(seu, label = T)
+
+# save data
+obj.name <- paste0(seu@project.name, ".seu.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+### 4) step1 clustering
+
+```{r}
+##
+Idents(seu) <- seu$RNA_snn_res.1
+markers.1 <- FindMarkers(seu, ident.1 = 1, only.pos = T)
+
+## remove bad clusters
+drop.clusters <- c() # high percent.mt and low genes, multiple markers
+seu <- subset(seu, RNA_snn_res.1 %notin% drop.clusters)
+seu <- subset(seu, percent.mt <= 10)
+
+## remove doublets
+seu <- DF_main(seu, split.by = "GSM_ID")
+seu <- subset(seu, DF.classifications == "Singlet")
+seu$DF.classifications <- NULL
+
+## re-run the seurat pipeline
+seu <- RunUMAP(seu, reduction = "mnn", dims = 1:30)
+seu <- seu %>% 
+    FindNeighbors(dims = 1:30, reduction = "mnn", k.param = 20, verbose = FALSE) %>% 
+    FindClusters(resolution = 2, verbose = FALSE)
+
+drop.clusters <- c(25,32) # high percent.mt and low genes, multiple markers
+seu <- subset(seu, RNA_snn_res.2 %notin% drop.clusters)
+
+## re-run the seurat pipeline
+seu <- RunUMAP(seu, reduction = "mnn", dims = 1:30)
+seu <- seu %>% 
+    FindNeighbors(dims = 1:30, reduction = "mnn", k.param = 20, verbose = FALSE) %>% 
+    FindClusters(resolution = 2, verbose = FALSE)
+
+seu$seurat_clusters <- NULL
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+```{r}
+gse_dataset = "Dev_2020_mouse_GSE130593"
+seu.raw <- load_dataset(gse_dataset, species = "mouse")
+
+## add new cell meta
+obj.name <- paste0(gse_dataset, ".seu.rds")
+obj.name
+seu <- readRDS(file.path(OUTDIR, obj.name))
+new.meta <- seu@meta.data
+new.meta <- new.meta |>
+  mutate(percent.chrX = seu.raw$percent.chrX[rownames(new.meta)],
+         percent.chrY = seu.raw$percent.chrY[rownames(new.meta)],
+         decontX_contamination = seu.raw$decontX_contamination[rownames(new.meta)],
+         .after="percent.ribo")
+seu@meta.data <- new.meta
+saveRDS(seu, file.path(OUTDIR, obj.name))
+
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+obj.name
+seu <- readRDS(file.path(OUTDIR, obj.name))
+new.meta <- seu@meta.data
+new.meta <- new.meta |>
+  mutate(percent.chrX = seu.raw$percent.chrX[rownames(new.meta)],
+         percent.chrY = seu.raw$percent.chrY[rownames(new.meta)],
+         decontX_contamination = seu.raw$decontX_contamination[rownames(new.meta)],
+         .after="percent.ribo")
+seu@meta.data <- new.meta
+saveRDS(seu, file.path(OUTDIR, obj.name))
+rm("seu.raw")
+```
+
+## Nat.Com_2021_mouse_GSE148032
+
+### 1) load data
+```{r}
+gse_dataset = "Nat.Com_2021_mouse_GSE148032"
+seu <- load_dataset(gse_dataset, species = "mouse")
+seu$orig.ident <- sub("_[ATGC]+$", "", colnames(seu))
+Idents(seu) <- seu$orig.ident
+```
+
+### 2) filter cells
+```{r, fig.width=20, fig.height=9}
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = T)
+
+seu <- subset(seu, nFeature_RNA >= 1000 & percent.mt <= 10)
+
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = F)
+```
+
+### 3) add cell metadata
+```{r}
+# run umap and cluster
+seu <- seurat_one_step(seu, outpath = result.path)
+
+# add metadata
+seu <- add_metadata(seu)
+
+# add public cell type
+INDIR = here("data/matrix", gse_dataset)
+pub.ct <- read.table(file.path(INDIR, "cell_type_published.txt"), sep = "\t", header = F, 
+                     col.names = c("cellID", "cell_type"))
+metadata.new <- seu@meta.data
+metadata.new$Cell_type_published <- mapvalues.2(x = rownames(metadata.new), 
+                                                from = pub.ct$cellID, 
+                                                to = pub.ct$cell_type)
+seu@meta.data <- metadata.new
+
+# add public cell meta
+pub.meta <- read.table(paste(INDIR, "cellmeta.txt", sep = "/"), 
+                       sep = "\t", header = F,
+                       col.names = c("CellID", "Age", "Sex", "Genotype", "Cell_enrichment"))
+metadata.new$Age <- mapvalues.2(x = rownames(metadata.new), from = pub.meta$CellID, to = pub.meta$Age)
+metadata.new$Sex <- mapvalues.2(x = rownames(metadata.new), from = pub.meta$CellID, to = pub.meta$Sex)
+metadata.new$Genotype <- mapvalues.2(x = rownames(metadata.new), from = pub.meta$CellID, to = pub.meta$Genotype)
+metadata.new$Cell_enrichment <- mapvalues.2(x = rownames(metadata.new), from = pub.meta$CellID, to = pub.meta$Cell_enrichment)
+seu@meta.data <- metadata.new
+
+seu <- subset(seu, Genotype == "WT")
+
+# show embeddings
+FeaturePlot(seu, features = "decontX_contamination")
+DimPlot(seu, group.by = "Sample_name", label = T)
+DimPlot(seu, label = T)
+
+# save data
+obj.name <- paste0(seu@project.name, ".seu.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+### 4) step1 clustering
+
+```{r}
+seu <- subset(seu, cells = rownames(subset(seu@meta.data, !is.na(Cell_type_published))) )
+seu <- subset(seu, Cell_type_published != "Outliers")
+
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+```{r}
+gse_dataset = "Nat.Com_2021_mouse_GSE148032"
+seu.raw <- load_dataset(gse_dataset, species = "mouse")
+
+## add new cell meta
+obj.name <- paste0(gse_dataset, ".seu.rds")
+obj.name
+seu <- readRDS(file.path(OUTDIR, obj.name))
+new.meta <- seu@meta.data
+new.meta <- new.meta |>
+  mutate(percent.chrX = seu.raw$percent.chrX[rownames(new.meta)],
+         percent.chrY = seu.raw$percent.chrY[rownames(new.meta)],
+         decontX_contamination = seu.raw$decontX_contamination[rownames(new.meta)],
+         .after="percent.ribo")
+seu@meta.data <- new.meta
+saveRDS(seu, file.path(OUTDIR, obj.name))
+
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+obj.name
+seu <- readRDS(file.path(OUTDIR, obj.name))
+new.meta <- seu@meta.data
+new.meta <- new.meta |>
+  mutate(percent.chrX = seu.raw$percent.chrX[rownames(new.meta)],
+         percent.chrY = seu.raw$percent.chrY[rownames(new.meta)],
+         decontX_contamination = seu.raw$decontX_contamination[rownames(new.meta)],
+         .after="percent.ribo")
+seu@meta.data <- new.meta
+saveRDS(seu, file.path(OUTDIR, obj.name))
+rm("seu.raw")
+```
+
+## Merge datasets
+
+```{r}
+datasets <- list.dirs("../data/matrix", recursive = F, full.names = F)
+datasets <- datasets[grep("*mouse*", datasets)]
+
+seu.merged <- lapply(datasets, function(xx) load_processed_dataset(xx, species = "mouse")) %>% reduce(., merge)
+
+sceasy::convertFormat(seu.merged, from="seurat", to="anndata", main_layer = "counts",
+                      outFile=file.path(OUTDIR, 'TCA_mouse.processed.h5ad'))
+```

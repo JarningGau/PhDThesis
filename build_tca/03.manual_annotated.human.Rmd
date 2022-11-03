@@ -1,0 +1,299 @@
+---
+title: "Testicular cell atlas"
+author: "Jarning"
+date: "2022/1/9"
+output: html_document
+---
+
+
+## setup code
+
+```{r setup}
+options(stringsAsFactors = FALSE)
+library(Seurat, lib.loc = "/home/software/R/seuratV3_env/")
+library(plyr)
+library(tidyverse)
+source("R/utils.R")
+source("R/vars.R")
+
+INDIR <- "../results/02.preprocess_human/"
+OUTDIR <- "../results/03.manual_annotation/"
+safe_mkdir(OUTDIR)
+```
+
+## Cell.Res_2018_human_GSE120508
+
+```{r, fig.width=10, fig.height=5}
+gse_dataset = "Cell.Res_2018_human_GSE120508"
+obj.name <- paste0(gse_dataset, ".seu.rds")
+seu <- readRDS(file.path(INDIR, obj.name))
+
+## filter cells
+metadata <- seu@meta.data
+bad.cells <- c(
+  rownames(subset(metadata, is.na(Cell_type_published) & RNA_snn_res.1==4 )),
+  rownames(subset(metadata, RNA_snn_res.1 %in% c(3,11) ))
+)
+kept.cells <- setdiff(colnames(seu), bad.cells)
+seu <- subset(seu, cells = kept.cells)
+
+## annotate manual
+clu2ct <- c(
+  "0" = "Leydig cells",
+  "1" = "Elongated spermatids",
+  "2" = "Elongated spermatids",
+  "5" = "Endothelial cells",
+  "6" = "Sertoli cells",
+  "7" = "Elongated spermatids",
+  "9" = "Macrophages",
+  "10" = "Round spermatids",
+  "13" = "Round spermatids",
+  "12" = "Myoid cells",
+  "14" = "Unknown",
+  "15" = "SSCs"
+)
+
+seu$Cell_type_manual <- mapvalues(x = seu$RNA_snn_res.1, from = names(clu2ct), to = clu2ct) %>% as.character()
+DimPlot(seu, group.by = "Cell_type_manual", label = T)
+
+p1 <- DimPlot(seu, label = T) + NoLegend()
+p2 <- DimPlot(seu, group.by = "Cell_type_published", label = T) + NoLegend()
+p3 <- DimPlot(seu, group.by = "Cell_type_manual", label = T) + NoLegend()
+p1 + p2 + p3
+```
+
+```{r}
+seu.spc <- subset(seu, Cell_type_manual %in% c("4","8"))
+seu.spc <- seu.spc %>% 
+  FindNeighbors(dims = 1:30, reduction = "mnn", k.param = 30, verbose = FALSE) %>% 
+  FindClusters(resolution = 1, verbose = FALSE)
+DimPlot(seu.spc, group.by = "RNA_snn_res.1", label = T)
+
+clu2ct <- c(
+  "0" = "Differentiated spermatogonia",
+  "1" = "Leptotene",
+  "2" = "Zygotene",
+  "3" = "pre Leptotene",
+  "4" = "Pachytene",
+  "5" = "Diplotene",
+  "6" = "pre Leptotene",
+  "7" = "7",
+  "8" = "Meiotic metaphase"
+)
+seu.spc$Cell_type_manual <- mapvalues(x = seu.spc$RNA_snn_res.1, 
+                                      from = names(clu2ct), 
+                                      to = clu2ct) %>% as.character()
+DimPlot(seu.spc, group.by = "Cell_type_manual", label = T)
+
+seu$Cell_type_manual <- purrr::map2_chr(.x = seu$Cell_type_manual, 
+                                        .y = rownames(seu@meta.data),
+                                        .f = function(xx, yy) {
+                                          if(xx %in% c("4","8")) {
+                                            seu.spc@meta.data[yy, "Cell_type_manual"]
+                                          }else{
+                                            xx
+                                          }
+                                        })
+## drop cells
+metadata <- seu@meta.data
+bad.cells <- c(
+  rownames(subset(metadata, Cell_type_manual %in% c("7") ))
+)
+kept.cells <- setdiff(colnames(seu), bad.cells)
+seu <- subset(seu, cells = kept.cells)
+
+DimPlot(seu, group.by = "Cell_type_manual", label = T)
+
+ct.levels <- c("Macrophages", "Endothelial cells", "Myoid cells", "Leydig cells", "Sertoli cells", "Unknown", 
+               "SSCs", "Differentiated spermatogonia", "pre Leptotene", "Leptotene", "Zygotene", "Pachytene", "Diplotene", 
+               "Meiotic metaphase", "Round spermatids", "Elongated spermatids")
+seu$Cell_type_manual <- factor(seu$Cell_type_manual, levels = ct.levels)
+DimPlot(seu, group.by = "Cell_type_manual", label = T)
+```
+
+```{r}
+outfile <- paste(outpath, paste0(gse_dataset, ".manual_celltypes.txt"), sep = "/")
+write.table(seu@meta.data, outfile, sep = "\t", quote = F)
+```
+
+```{r, fig.width=12, fig.height=6}
+DotPlot(seu, features = htca.markers, group.by = "Cell_type_manual") + RotatedAxis()
+```
+
+## Cell.Stem.Cell_2018_human_GSE106487
+
+```{r, fig.width=10, fig.height=5}
+gse_dataset = "Cell.Stem.Cell_2018_human_GSE106487"
+obj.name <- paste0(gse_dataset, ".seu.rds")
+seu <- readRDS(paste(INDIR, obj.name, sep = "/"))
+
+## annotate manual
+clu2ct <- c(
+  "0" = "Round spermatids",
+  "1" = "Elongated spermatids",
+  "2" = "Diplotene",
+  "6" = "Meiotic metaphase",
+  "7" = "Sertoli cells",
+  "8" = "Pachytene",
+  "9" = "Round spermatids",
+  "10" = "SSCs",
+  "11" = "Differentiated spermatogonia"
+)
+
+seu$Cell_type_manual <- mapvalues(x = seu$RNA_snn_res.1, from = names(clu2ct), to = clu2ct) %>% as.character()
+DimPlot(seu, group.by = "Cell_type_manual", label = T)
+```
+
+```{r}
+## redo cluster
+seu.clu3 <- subset(seu, RNA_snn_res.1 == "3")
+seu.clu3 <- seu.clu3 %>% 
+  FindNeighbors(dims = 1:30, reduction = "mnn", k.param = 20, verbose = FALSE) %>% 
+  FindClusters(resolution = .4, verbose = FALSE)
+
+clu2ct <- c(
+  "0" = "Macrophages",
+  "1" = "Leydig cells & Myoid cells"
+)
+
+seu.clu3$Cell_type_manual <- mapvalues(x = seu.clu3$RNA_snn_res.0.4, 
+                                       from = names(clu2ct), 
+                                       to = clu2ct) %>% as.character()
+
+seu$Cell_type_manual <- purrr::map2_chr(.x = seu$Cell_type_manual, 
+                                        .y = rownames(seu@meta.data),
+                                        .f = function(xx, yy) {
+                                          if(xx %in% c("3")) {
+                                            seu.clu3@meta.data[yy, "Cell_type_manual"]
+                                          }else{
+                                            xx
+                                          }
+                                        })
+DimPlot(seu, group.by = "Cell_type_manual", label = T)
+```
+
+```{r}
+## redo cluster
+seu.spc <- subset(seu, RNA_snn_res.1 %in% c("4","5"))
+seu.spc <- seu.spc %>% 
+  FindNeighbors(dims = 1:30, reduction = "mnn", k.param = 20, verbose = FALSE) %>% 
+  FindClusters(resolution = .4, verbose = FALSE)
+
+DimPlot(seu.spc, group.by = "RNA_snn_res.0.4")
+
+clu2ct <- c(
+  "0" = "Leptotene",
+  "1" = "Zygotene",
+  "2" = "Zygotene",
+  "3" = "Differentiated spermatogonia"
+)
+seu.spc$Cell_type_manual <- mapvalues(x = seu.spc$RNA_snn_res.0.4, 
+                                      from = names(clu2ct), 
+                                      to = clu2ct) %>% as.character()
+seu$Cell_type_manual <- purrr::map2_chr(.x = seu$Cell_type_manual, 
+                                        .y = rownames(seu@meta.data),
+                                        .f = function(xx, yy) {
+                                          if(xx %in% c("4","5")) {
+                                            seu.spc@meta.data[yy, "Cell_type_manual"]
+                                          }else{
+                                            xx
+                                          }
+                                        })
+
+DimPlot(seu, group.by = "Cell_type_manual", label = T)
+
+## drop cells
+seu <- subset(seu, Cell_type_manual != "Leydig cells & Myoid cells")
+
+DimPlot(seu, group.by = "Cell_type_manual", label = T)
+
+ct.levels <- c("Macrophages", "Sertoli cells", 
+               "SSCs", "Differentiated spermatogonia", "Leptotene", "Zygotene", "Pachytene", "Diplotene", 
+               "Meiotic metaphase", "Round spermatids", "Elongated spermatids")
+seu$Cell_type_manual <- factor(seu$Cell_type_manual, levels = ct.levels)
+```
+
+```{r}
+outfile <- paste(outpath, paste0(gse_dataset, ".manual_celltypes.txt"), sep = "/")
+write.table(seu@meta.data, outfile, sep = "\t", quote = F)
+```
+
+
+```{r, fig.width=10, fig.height=6}
+DotPlot(seu, features = htca.markers, group.by = "Cell_type_manual") + RotatedAxis()
+```
+
+## Cell.Stem.Cell_2017_human_GSE86146
+
+```{r, fig.width=10, fig.height=5}
+gse_dataset = "Cell.Stem.Cell_2017_human_GSE86146"
+obj.name <- paste0(gse_dataset, ".seu.rds")
+seu <- readRDS(file.path(INDIR, obj.name))
+
+seu <- RunUMAP(seu, dims = 1:20, reduction = "mnn")
+seu <- seu %>%
+  FindNeighbors(dims = 1:20, reduction = "mnn", k.param = 20, verbose = FALSE) %>%
+  FindClusters(resolution = 1, verbose = FALSE)
+
+## annotate manual
+clu2ct <- c(
+  "0" = "OCT4+ FGCs",
+  "1" = "OCT4- FGCs",
+  "2" = "OCT4+ MKI67+ FGCs",
+  "4" = "OCT4- FGCs",
+  "5" = "OCT4- FGCs"
+)
+
+replace_col <- function(x, from ,to) {
+  z <- mapvalues(x, from, to, warn_missing = F) %>% as.character()
+  ifelse(z == x, NA, z)
+}
+
+seu$Cell_type_manual <- replace_col(x = seu$RNA_snn_res.1, from = names(clu2ct), to = clu2ct)
+seu$Cell_type_manual <- ifelse(is.na(seu$Cell_type_manual), seu$Cell_type_published, seu$Cell_type_manual)
+
+seu <- subset(seu, Cell_type_manual %in% c(clu2ct, "Sertoli cells", "Leydig precursor"))
+
+p1 <- DimPlot(seu, label = T) + NoLegend()
+p2 <- DimPlot(seu, group.by = "Cell_type_published", label = T) + NoLegend()
+p3 <- DimPlot(seu, group.by = "Cell_type_manual", label = T) + NoLegend()
+p1 + p2 + p3
+```
+
+```{r}
+outfile <- paste(outpath, paste0(gse_dataset, ".manual_celltypes.txt"), sep = "/")
+write.table(seu@meta.data, outfile, sep = "\t", quote = F)
+```
+
+## Cell.Stem.Cell_2020_human_GSE134144
+
+```{r, fig.width=10, fig.height=5}
+gse_dataset = "Cell.Stem.Cell_2020_human_GSE134144"
+obj.name <- paste0(gse_dataset, ".seu.rds")
+seu <- readRDS(file.path(INDIR, obj.name))
+
+## annotate manual
+clu2ct <- c(
+  "0" = "Myoid cells",
+  "1" = "Leydig cells",
+  "7" = "Leydig cells",
+  "2" = "Endothelial cells",
+  "3" = "Endothelial cells",
+  "4" = "Sertoli cells",
+  "6" = "Macrophages",
+  "9" = "Sertoli cells",
+  "10" = "Muscle cells"
+)
+
+seu$Cell_type_manual <- mapvalues(x = seu$RNA_snn_res.1, from = names(clu2ct), to = clu2ct) %>% as.character()
+
+seu <- subset(seu, RNA_snn_res.1 %notin% c(11,12,13,8,5,14,15))
+
+DimPlot(seu, group.by = "Cell_type_manual", label = T)
+```
+
+```{r}
+outfile <- paste(outpath, paste0(gse_dataset, ".manual_celltypes.txt"), sep = "/")
+write.table(seu@meta.data, outfile, sep = "\t", quote = F)
+```
+

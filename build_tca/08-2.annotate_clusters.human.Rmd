@@ -1,0 +1,143 @@
+---
+title: "Testicular cell atlas"
+author: "Jarning"
+date: "2022/4/16"
+output: html_document
+---
+
+```{r}
+options(stringsAsFactors = FALSE)
+library(magrittr)
+library(tidyverse)
+library(patchwork)
+source("R/utils.R")
+source("R/00.theme.R")
+source("R/08.annotate_clusters.utils.R")
+```
+
+## 1. Load data
+
+```{r}
+cellmeta <- readRDS("../results/07.label_transfer.human/hTCA.core.cellmeta.rds")
+cellemb <- read.csv("../results/08.iterative_clustering/hTCA_cellmeta_iter_clusters.csv", row.names = 1)
+cellemb <- cellemb[rownames(cellmeta), ]
+cellmeta <- cbind(cellmeta, cellemb)
+cellmeta <- cellmeta %>% rename_with(Hmisc::capitalize, starts_with("leiden"))
+```
+
+## 2. Consensus metrics
+
+```{r, fig.width=10, fig.height=8}
+cn = "Leiden_r1"
+cellmeta <- calculate.consensus.metrics(cellmeta, cn)
+plot.consensus.metrics(cellmeta, cn)
+
+cn = "Leiden_r2"
+cellmeta <- calculate.consensus.metrics(cellmeta, cn)
+plot.consensus.metrics(cellmeta, cn)
+
+cn = "Leiden_r3"
+cellmeta <- calculate.consensus.metrics(cellmeta, cn)
+plot.consensus.metrics(cellmeta, cn)
+
+cn = "Leiden_r4"
+cellmeta <- calculate.consensus.metrics(cellmeta, cn)
+plot.consensus.metrics(cellmeta, cn)
+```
+
+## 3. Annotate clusters
+
+```{r}
+tab.annot <- cellmeta %>% 
+  select(starts_with("Leiden_")) %>% 
+  distinct()
+
+write_tsv(tab.annot, "../results/08.iterative_clustering/hTCA_leiden_hierarchical_clusters.tsv")
+```
+
+Annotate clutsters and save into `../results/08.iterative_clustering/hTCA_leiden_hierarchical_clusters.annotation.tsv`.
+
+```{r}
+leiden.clu.anno <- read_tsv("../results/08.iterative_clustering/hTCA_leiden_hierarchical_clusters.annotation.tsv",
+                            col_types = list("c","c","c","c","c","c","c","c"))
+
+l4anno1 <- leiden.clu.anno$Cell_type_level1
+names(l4anno1) <- leiden.clu.anno$Leiden_r4
+
+l4anno2 <- leiden.clu.anno$Cell_type_level2
+names(l4anno2) <- leiden.clu.anno$Leiden_r4
+
+l4anno3 <- leiden.clu.anno$Cell_type_level3
+names(l4anno3) <- leiden.clu.anno$Leiden_r4
+
+l4anno4 <- leiden.clu.anno$Cell_type_level4
+names(l4anno4) <- leiden.clu.anno$Leiden_r4
+
+cellmeta$Leiden_r1 %<>% as.character()
+cellmeta$Leiden_r2 %<>% as.character()
+cellmeta$Leiden_r3 %<>% as.character()
+cellmeta$Leiden_r4 %<>% as.character()
+```
+
+```{r}
+cellmeta$Cell_type_level1 <- l4anno1[cellmeta$Leiden_r4]
+cellmeta$Cell_type_level2 <- l4anno2[cellmeta$Leiden_r4]
+cellmeta$Cell_type_level3 <- l4anno3[cellmeta$Leiden_r4]
+cellmeta$Cell_type_level4 <- l4anno4[cellmeta$Leiden_r4]
+```
+
+```{r, fig.width=10, fig.height=8}
+set.seed(1024)
+ggplot(cellmeta, aes(UMAP_1, UMAP_2, color=factor(Cell_type_level4, levels = sample(unique(Cell_type_level4))))) + 
+    geom_point(size = .2, alpha=1, show.legend = F) + 
+    geom_text(inherit.aes = F, data = get_label_pos(cellmeta, emb = "UMAP", group.by="Cell_type_level4"), 
+              aes(x,y,label=label), size=3) + 
+    theme_void()
+```
+
+```{r}
+## rename mix clusters
+cells.select <- grepl(pattern = "^mixed", cellmeta$Cell_type_level4)
+table(cellmeta$Cell_type_level4[cells.select])
+table(cellmeta$Cell_type_corrected[cells.select])
+cellmeta$Cell_type_final <- ifelse(cells.select, cellmeta$Cell_type_corrected, cellmeta$Cell_type_level4)
+
+## remove bad cells
+## 1) doublets
+bad.cells.1 <- subset(cellmeta, Cell_type_level4 %in% c("Doublets [Undiff Spg/Sertoli]", "highly mixed")) |> rownames() 
+## 2) wrong label
+bad.cells.2 <- intersect(rownames(cellmeta)[cells.select], 
+                         rownames(subset(cellmeta, Cell_type_corrected %in% c("SSCs", "Zygotene"))))
+## 3) B cells & blood cells
+bad.cells.3 <- subset(cellmeta, Cell_type_corrected %in% c("B cells", "Erythrocyte")) |> rownames()
+## 4) high ambient rna contamination
+bad.cells.4 <- subset(cellmeta, decontX_contamination >= 0.4) |> rownames()
+
+bad.cells <- unique(c(bad.cells.1, bad.cells.2, bad.cells.3))
+# bad.cells <- unique(c(bad.cells.1, bad.cells.2, bad.cells.3, bad.cells.4))
+kept.cells <- setdiff(rownames(cellmeta), bad.cells)
+cellmeta <- cellmeta[kept.cells, ]
+```
+
+```{r, fig.width=10, fig.height=8}
+set.seed(1024)
+ggplot(cellmeta, aes(UMAP_1, UMAP_2, color=factor(Cell_type_final, levels = sample(unique(Cell_type_final))))) + 
+    geom_point(size = .2, alpha=1, show.legend = F) + 
+    geom_text(inherit.aes = F, data = get_label_pos(cellmeta, emb = "UMAP", group.by="Cell_type_final"), 
+              aes(x,y,label=label), size=3) + 
+    theme_void()
+```
+
+```{r}
+seu <- sceasy::convertFormat("../results/07.label_transfer.mouse/mTCA.core.h5ad", from = "anndata", to = "seurat")
+seu <- subset(seu, cells = kept.cells)
+seu@meta.data <- cellmeta[rownames(seu@meta.data), ]
+seu[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(seu@meta.data[, c("UMAP_1", "UMAP_2")]), assay = "RNA")
+
+## save data
+sceasy::convertFormat(seu, from = "seurat", to = "anndata", outFile = "../results/08.iterative_clustering/hTCA.core.h5ad")
+saveRDS(seu@meta.data, "../results/08.iterative_clustering/hTCA.core.cellmeta.rds")
+write.table(seu@meta.data, "../results/08.iterative_clustering/hTCA.core.cellmeta.tsv", sep = "\t", quote = F)
+saveRDS(seu, "../results/08.iterative_clustering/hTCA.core.seurat.rds")
+```
+

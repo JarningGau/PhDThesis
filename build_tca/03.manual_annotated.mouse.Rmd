@@ -1,0 +1,470 @@
+---
+title: "Testicular cell atlas"
+author: "Jarning"
+date: "2022/1/15"
+output: html_document
+---
+
+## setup code
+
+```{r setup}
+options(stringsAsFactors = FALSE)
+library(Seurat, lib.loc = "/home/software/R/seuratV3_env/")
+library(plyr)
+library(tidyverse)
+source("R/utils.R")
+source("R/vars.R")
+
+INDIR <- "../results/02.preprocess_mouse/"
+OUTDIR <- "../results/03.manual_annotation/"
+safe_mkdir(OUTDIR)
+```
+
+## Nat.Com_2019_mouse_E-MTAB-6946
+
+```{r, fig.width=10, fig.height=5}
+gse_dataset = "Nat.Com_2019_mouse_E-MTAB-6946"
+obj.name <- paste0(gse_dataset, ".seu.rds")
+seu <- readRDS(file.path(INDIR, obj.name, sep = "/"))
+
+## filter cells
+metadata <- seu@meta.data
+bad.cells <- c(
+  rownames(subset(metadata, RNA_snn_res.1 %in% c(6,19,21) ))
+)
+kept.cells <- setdiff(colnames(seu), bad.cells)
+seu <- subset(seu, cells = kept.cells)
+
+seu <- RunUMAP(seu, dims = 1:30, reduction = "mnn")
+seu <- seu %>% 
+  FindNeighbors(dims = 1:30, reduction = "mnn", k.param = 10, verbose = FALSE) %>% 
+  FindClusters(resolution = 1, verbose = FALSE)
+
+metadata <- seu@meta.data
+bad.cells <- c(
+  rownames(subset(metadata, RNA_snn_res.1 %in% c(32,40,43) ))
+)
+kept.cells <- setdiff(colnames(seu), bad.cells)
+seu <- subset(seu, cells = kept.cells)
+
+## annotate manual
+clu2ct <- c(
+  "0" = "Leydig cells",
+  "1" = "Leydig cells",
+  "2" = "Leydig cells",
+  "3" = "Leydig cells",
+  "4" = "Leydig cells",
+  "42" = "Leydig cells",
+  "44" = "Leydig cells",
+  "22" = "Leydig cells",
+  
+  "6" = "Myoid cells",
+  "37" = "Myoid cells",
+  
+  "12" = "Sertoli cells",
+  "23" = "Sertoli cells",
+  "20" = "Sertoli cells",
+  "45" = "Sertoli cells",
+  
+  "33" = "Macrophages",
+  "39" = "Macrophages",
+  "41" = "Macrophages",
+  
+  "34" = "Endothelial cells",
+  "35" = "Endothelial cells",
+  
+  "10" = "Zygotene",
+  
+  "26" = "Pachytene",
+  "9" = "Pachytene",
+  "18" = "Pachytene",
+  
+  "16" = "Diplotene",
+  "28" = "Diplotene",
+  
+  "31" = "Meiotic metaphase",
+  "15" = "Meiotic metaphase",
+  
+  "17" = "Round spermatids",
+  "14" = "Round spermatids",
+  "21" = "Round spermatids",
+  "30" = "Round spermatids",
+  "38" = "Round spermatids",
+  
+  "27" = "Elongated spermatids",
+  "24" = "Elongated spermatids",
+  "25" = "Elongated spermatids",
+  "19" = "Elongated spermatids",
+  "29" = "Elongated spermatids",
+  "11" = "Elongated spermatids"
+)
+
+seu$Cell_type_manual <- mapvalues(x = seu$RNA_snn_res.1, from = names(clu2ct), to = clu2ct) %>% as.character()
+DimPlot(seu, group.by = "Cell_type_manual", label = T)
+
+seu.spg <- subset(seu, RNA_snn_res.1 %in% c(7,5,8,13))
+seu.spg <- seu.spg %>% 
+  FindNeighbors(dims = 1:30, reduction = "mnn", k.param = 30, verbose = FALSE) %>% 
+  FindClusters(resolution = 1, verbose = FALSE)
+DimPlot(seu.spg, group.by = "RNA_snn_res.1", label = T)
+
+clu2ct <- c(
+  "3" = "Leptotene",
+  "8" = "Leptotene",
+  "7" = "pre Leptotene",
+  "0" = "type A spermatogonia",
+  "1" = "type A spermatogonia",
+  "6" = "undiff A spermatogonia",
+  "9" = "type B spermatogonia",
+  "4" = "type B spermatogonia",
+  "5" = "type B spermatogonia",
+  "10" = "type B spermatogonia"
+)
+
+seu.spg$Cell_type_manual <- mapvalues(x = seu.spg$RNA_snn_res.1, from = names(clu2ct), to = clu2ct) %>% as.character()
+
+seu$Cell_type_manual <- purrr::map2_chr(.x = seu$Cell_type_manual, 
+                                        .y = rownames(seu@meta.data),
+                                        .f = function(xx, yy) {
+                                          if(xx %in% c(7,5,8,13)) {
+                                            seu.spg@meta.data[yy, "Cell_type_manual"]
+                                          }else{
+                                            xx
+                                          }
+                                        })
+## drop cells
+metadata <- seu@meta.data
+bad.cells <- c(
+  rownames(subset(metadata, Cell_type_manual %in% c(2,36) ))
+)
+kept.cells <- setdiff(colnames(seu), bad.cells)
+seu <- subset(seu, cells = kept.cells)
+
+ct.levels <- c("Macrophages", "Endothelial cells", "Myoid cells", "Leydig cells", "Sertoli cells", 
+               "undiff A spermatogonia", "type A spermatogonia", "type B spermatogonia",
+               "pre Leptotene", "Leptotene", "Zygotene", "Pachytene", "Diplotene", 
+               "Meiotic metaphase", "Round spermatids", "Elongated spermatids")
+setdiff(unique(seu$Cell_type_manual), ct.levels)
+setdiff(ct.levels, unique(seu$Cell_type_manual))
+seu$Cell_type_manual <- factor(seu$Cell_type_manual, levels = ct.levels)
+DimPlot(seu, group.by = "Cell_type_manual", label = T)
+```
+
+```{r, fig.width=12, fig.height=6}
+features = c("Vim","Cd68","Vwf","Acta2","Igf1","Sox9","Dazl",
+             "Zbtb16","Ccnd2","Esx1","Stra8","Prss50","Rad51ap2",
+             "Mlh3","Piwil1","Pou5f2","Ccna1","Tex36","Sun5","Prm1","Cstl1","Prm2")
+
+DotPlot(seu, features = features, group.by = "Cell_type_manual") + RotatedAxis()
+```
+
+```{r}
+seu.small <- subset(seu, downsample=100)
+Idents(seu.small) <- seu.small$Cell_type_manual
+markers <- FindMarkers(seu.small, ident.1 = "mid Pachytene")
+```
+
+
+42 & 44 | Klk1b24+ Leydig cells
+
+```{r, fig.width=10, fig.height=5}
+p1 <- DimPlot(seu, group.by = "RNA_snn_res.1", label = T) + NoLegend()
+p2 <- DimPlot(seu, group.by = "Cell_type_manual", label = T) + NoLegend()
+p1 + p2
+```
+
+```{r}
+outfile <- file.path(OUTDIR, paste0(gse_dataset, ".manual_celltypes.txt"))
+write.table(seu@meta.data, outfile, sep = "\t", quote = F)
+```
+
+### Correction
+```{r}
+gse_dataset = "Nat.Com_2019_mouse_E-MTAB-6946"
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+seu <- readRDS(paste(inpath, obj.name, sep = "/"))
+
+outfile <- file.path(OUTDIR, paste0(gse_dataset, ".manual_celltypes.txt"))
+temp.cellmeta <- read.table(outfile, sep = "\t", row.names = 1)
+
+cell_types <- temp.cellmeta$Cell_type_manual
+names(cell_types) <- rownames(temp.cellmeta)
+
+seu$Cell_type_manual <- cell_types
+```
+
+```{r}
+markers <- c("Cyp11a1","Cd34","Igf1","Pecam1")
+DimPlot(seu, group.by = "Cell_type_manual", label = T) + NoLegend()
+DimPlot(seu, label = T) + NoLegend()
+DimPlot(seu, group.by = "Cell_type_published", label = T) + NoLegend()
+FeaturePlot(seu, features = markers)
+```
+
+```{r, fig.width=12, fig.height=12}
+DimPlot(seu, group.by = "Cell_type_published", split.by = "Age", label = T, ncol = 3) + NoLegend()
+```
+
+
+```{r, fig.width=15, fig.height=3}
+markers <- c("Cyp11a1","Cd34","Acta2")
+DotPlot(seu, features = markers) + coord_flip()
+```
+
+```{r}
+clu2ct <- c(
+  "0" = "CD34+ stromal cells",
+  "1" = "CD34+ stromal cells",
+  "2" = "CD34+ stromal cells",
+  "3" = "CD34+ stromal cells",
+  "6" = "CD34+ stromal cells",
+  "19" = "CD34+ stromal cells",
+  "4" = "Leydig cells",
+  "27" = "Leydig cells",
+  "52" = "Leydig cells",
+  "53" = "Leydig cells"
+)
+
+cell_types <- seu$Cell_type_manual
+names(cell_types) <- rownames(seu@meta.data)
+cell_types.temp <- clu2ct[as.character(Idents(seu))]
+cell_types.new <- ifelse(is.na(cell_types.temp), 
+                         cell_types, cell_types.temp)
+names(cell_types.new) <- names(cell_types)
+seu$Cell_type_manual <- cell_types.new
+
+DimPlot(seu, group.by = "Cell_type_manual", label = T) + NoLegend()
+```
+
+```{r}
+outfile <- file.path(OUTDIR, paste0(gse_dataset, ".manual_celltypes.txt"))
+write.table(seu@meta.data, outfile, sep = "\t", quote = F)
+```
+
+
+## Cell.Res_2018_mouse_GSE107644
+
+```{r}
+gse_dataset = "Cell.Res_2018_mouse_GSE107644"
+obj.name <- paste0(gse_dataset, ".seu.rds")
+seu <- readRDS(file.path(INDIR, obj.name, sep = "/"))
+
+seu <- seu %>% 
+  FindVariableFeatures() %>% 
+  ScaleData() %>% 
+  RunPCA()
+seu <- RunUMAP(seu, dims = 1:10, reduction = "pca")
+
+seu <- seu %>% 
+  FindNeighbors(dims = 1:10, reduction = "pca", k.param = 20, verbose = FALSE) %>% 
+  FindClusters(resolution = 1, verbose = FALSE)
+
+clu2ct <- c(
+  "10" = "Leptotene",
+  "6" = "Zygotene",
+  "7" = "Pachytene",
+  "14" = "Pachytene",
+  "8" = "Pachytene",
+  "2" = "Diplotene",
+  "12" = "Meiotic metaphase",
+  "15" = "Meiotic metaphase",
+  "9" = "Round spermatids",
+  "13" = "Round spermatids",
+  "11" = "Round spermatids"
+)
+
+seu$Cell_type_manual <- mapvalues(x = seu$RNA_snn_res.1, from = names(clu2ct), to = clu2ct) %>% as.character()
+
+DimPlot(seu, group.by = "Cell_type_manual", label = T)
+
+seu.spg <- subset(seu, Cell_type_manual %in% c(0,1,3,4,5,16))
+```
+
+```{r}
+clu2ct <- c(
+  "A1" = "type A spermatogonia",
+  "ePL" = "type B spermatogonia",
+  "G1" = "type B spermatogonia",
+  "In" = "type B spermatogonia",
+  "TypeBG2M" = "type B spermatogonia",
+  "TypeBS" = "type B spermatogonia",
+  "mPL" = "pre Leptotene",
+  "lPL" = "pre Leptotene"
+)
+
+seu.spg$Cell_type_manual <- mapvalues(x = seu.spg$Cell_type_published, from = names(clu2ct), to = clu2ct) %>% as.character()
+
+seu$Cell_type_manual <- purrr::map2_chr(.x = seu$Cell_type_manual, 
+                                        .y = rownames(seu@meta.data),
+                                        .f = function(xx, yy) {
+                                          if(xx %in% c(0,1,3,4,5,16)) {
+                                            seu.spg@meta.data[yy, "Cell_type_manual"]
+                                          }else{
+                                            xx
+                                          }
+                                        })
+DimPlot(seu, group.by = "Cell_type_manual", label = T)
+
+seu <- subset(seu, Cell_type_manual %notin% c("L","Z","eP"))
+```
+
+```{r}
+outfile <- file.path(OUTDIR, paste0(gse_dataset, ".manual_celltypes.txt"))
+write.table(seu@meta.data, outfile, sep = "\t", quote = F)
+```
+
+## Dev_2020_mouse_GSE130593
+
+```{r}
+gse_dataset = "Dev_2020_mouse_GSE130593"
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+seu <- readRDS(file.path(INDIR, obj.name))
+```
+
+```{r, fig.width=16, fig.height=8}
+markers <- c("Dazl","Amh","Cyp11a1","Acta2","Pecam1","Igf1","Cd68","Cd34")
+FeaturePlot(seu, features = markers, ncol = 4)
+```
+
+```{r, fig.width=12, fig.height=4}
+DotPlot(seu, features = markers) + coord_flip()
+```
+
+```{r}
+clu2ct <- c(
+  "0" = "Sertoli cells",
+  "2" = "Sertoli cells",
+  "5" = "Sertoli cells",
+  "6" = "Sertoli cells",
+  "7" = "Sertoli cells",
+  "9" = "Sertoli cells",
+  "11" = "Sertoli cells",
+  "12" = "Sertoli cells",
+  "15" = "Sertoli cells",
+  "16" = "Sertoli cells",
+  "17" = "Sertoli cells",
+  "20" = "Sertoli cells",
+  "29" = "Leydig cells",
+  "32" = "Leydig cells",
+  "36" = "Leydig cells",
+  "1" = "CD34+ stromal cells",
+  "3" = "CD34+ stromal cells",
+  "4" = "CD34+ stromal cells",
+  "10" = "CD34+ stromal cells",
+  "22" = "CD34+ stromal cells",
+  "25" = "CD34+ stromal cells",
+  "26" = "CD34+ stromal cells",
+  "33" = "CD34+ stromal cells",
+  "23" = "Endothelial cells",
+  "40" = "Endothelial cells",
+  "31" = "Macrophages",
+  "8" = "Myoid cells",
+  "13" = "Myoid cells",
+  "14" = "Myoid cells",
+  "19" = "Myoid cells",
+  "24" = "Myoid cells",
+  "27" = "Musucle cells"
+)
+
+clusters <- as.character(Idents(seu))
+cell_types <- clu2ct[clusters]
+seu$Cell_type_manual <- cell_types
+
+DimPlot(seu, group.by = "Cell_type_manual", label = T) + NoLegend()
+```
+
+```{r}
+outfile <- file.path(OUTDIR, paste0(gse_dataset, ".manual_celltypes.txt"))
+write.table(seu@meta.data, outfile, sep = "\t", quote = F)
+```
+
+
+## Nat.Com_2021_mouse_GSE148032
+
+```{r}
+gse_dataset = "Nat.Com_2021_mouse_GSE148032"
+obj.name <- paste0(gse_dataset, ".seu.rds")
+seu <- readRDS(file.path(INDIR, obj.name))
+
+# 
+seu <- seu %>% 
+  NormalizeData(scale.factor = 1e5) %>% 
+  FindVariableFeatures(nfeatures = 1000) %>% 
+  ScaleData() %>% 
+  RunPCA() %>% 
+  RunUMAP(reduction = "pca", dims = 1:30)
+
+# filter cells
+metadata <- seu@meta.data
+bad.cells <- c(
+  rownames(subset(metadata, Cell_type_published %in% c("Outliers", "Blood cells") )),
+  rownames(subset(metadata, is.na(Cell_type_published) ))
+)
+kept.cells <- setdiff(colnames(seu), bad.cells)
+seu <- subset(seu, cells = kept.cells)
+
+clu2ct <- c(
+  "Epiblast" = "Epiblast",
+  "Hindgut & Visceral Endoderm" = "Hindgut & Visceral Endoderm",
+  "Leydig cells" = "Leydig cells",
+  "Mesenchyme" = "Mesenchyme",
+  "Mesoderm" = "Mesoderm",
+  
+  "Specification PGCs" = "Specification PGCs",
+  "Migrating PGCs" = "Migrating PGCs",
+  "Mitotic arrest PGCs" = "Mitotic arrest PGCs",
+  "Mitotic PGCs" = "Mitotic PGCs",
+  
+  "PMC & IP" = "Myoid cells",
+  "Primitive Streak" = "Primitive Streak",
+  "Progenitors" = "Somatic progenitor cells",
+  
+  "Q-ProSPG" = "Quiescent prospermatogonia",
+  "T-ProSPG" = "Transitional prospermatogonia",
+  
+  "Undiff.ed SPG" = "undiff A spermatogonia",
+  "Diff.ing SPG" = "Diff spermatogonia",
+  "Diff.ed SPG" = "Diff spermatogonia",
+  "L" = "Leptotene",
+  "Z" = "Zygotene",
+  "P" = "Pachytene",
+  "D" = "Diplotene",
+  "MI" = "Meiotic metaphse",
+  "RS2" = "Round spermatids",
+  "RS4" = "Round spermatids",
+  "RS6" = "Round spermatids",
+  "RS8" = "Round spermatids",
+  
+  "Sertoli cells" = "Sertoli cells"
+)
+
+setdiff(names(clu2ct), unique(seu$Cell_type_published))
+setdiff(unique(seu$Cell_type_published), names(clu2ct))
+
+seu$Cell_type_manual <- mapvalues(x = seu$Cell_type_published, from = names(clu2ct), to = clu2ct) %>% as.character()
+```
+
+```{r}
+# filter cells
+metadata <- seu@meta.data
+bad.cells <- c(
+  rownames(subset(metadata, Cell_type_published %in% names(clu2ct[16:26]) ))
+)
+kept.cells <- setdiff(colnames(seu), bad.cells)
+seu <- subset(seu, cells = kept.cells)
+```
+
+```{r, fig.width=10, fig.height=7}
+DimPlot(seu, group.by = "Cell_type_published", label = T) + 
+  ggsci::scale_color_d3("category20")
+
+DimPlot(seu, group.by = "Cell_type_manual", label = T) + 
+  ggsci::scale_color_d3("category20")
+```
+
+```{r}
+outfile <- file.path(OUTDIR, paste0(gse_dataset, ".manual_celltypes.txt"))
+write.table(seu@meta.data, outfile, sep = "\t", quote = F)
+```
+
+

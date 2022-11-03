@@ -1,0 +1,292 @@
+---
+title: "Testicular cell atlas"
+author: "Jarning"
+date: "2022/1/16"
+output: html_document
+---
+
+
+```{r setup}
+options(stringsAsFactors = FALSE)
+library(tidyverse)
+library(Seurat, lib.loc = "/home/software/R/seuratV3_env/")
+source("R/00.theme.R")
+source("R/utils.R")
+source("R/vars.R")
+```
+
+
+## Load results
+
+```{r}
+seu <- sceasy::convertFormat("../results/02.preprocess_mouse/TCA_mouse.processed.h5ad", from = "anndata", to = "seurat")
+pred.label <- readRDS("../results/07.label_transfer.mouse/mTCA.predicted_labels.rds")
+labeled.ds <- readRDS("../results/07.label_transfer.mouse/mTCA.AUCell.labeled.rds")
+umap.emb <- read.csv("../results/04.scvi/TCA_mouse.emb_umap.csv", row.names = 1)
+scvi.emb <- read.csv("../results/04.scvi/TCA_mouse.emb_scvi.csv", row.names = 1)
+old.meta <- read.csv("../results/04.scvi/TCA_mouse.cellmeta.csv", row.names = 1)
+
+seu$Cell_type_predicted <- pred.label[rownames(seu@meta.data), ]$pred.label
+seu$Purity <- pred.label[rownames(seu@meta.data), ]$purity
+
+ct.levels <- c("Macrophages", "Endothelial cells", "Myoid cells", "Leydig cells", "Sertoli cells", 
+               "Musucle cells",
+               "CD34+ stromal cells", "Somatic progenitor cells", "Epiblast", "Mesoderm", "Mesenchyme",
+               "Hindgut & Visceral Endoderm", "Primitive Streak", "Specification PGCs", 
+               "Migrating PGCs", "Mitotic PGCs", "Mitotic arrest PGCs", 
+               "Quiescent prospermatogonia", "Transitional prospermatogonia", 
+               "undiff A spermatogonia", "type A spermatogonia", "type B spermatogonia", "pre Leptotene", 
+               "Leptotene", "Zygotene", "Pachytene", "Diplotene", 
+               "Meiotic metaphase", "Round spermatids", "Elongated spermatids")
+
+setdiff(unique(seu$Cell_type_predicted), ct.levels)
+seu$Cell_type_predicted <- factor(seu$Cell_type_predicted, levels = ct.levels)
+seu[["umap"]] <- CreateDimReducObject(as.matrix(umap.emb))
+seu[["scvi"]] <- CreateDimReducObject(as.matrix(scvi.emb))
+seu$Cell_type_manual <- mapvalues.2(rownames(seu@meta.data), 
+                                    from = rownames(labeled.ds), 
+                                    to = as.character(labeled.ds$Cell_type_manual))
+seu$Leiden <- factor(old.meta$leiden)
+```
+
+```{r}
+## correct metadata
+h <- c("STRT-seq" = "STRT-Seq", "Drop-seq" = "Drop-Seq")
+seu$Platform <- .replace(seu$Platform, h)
+seu$Age <- .replace(as.character(seu$Age), corrected.mmu.age) # 'corrected.mmu.age' defined in R/vars.R
+```
+
+
+```{r, fig.width=8, fig.height=8}
+data.use <- FetchData(seu, vars = c("UMAP_1","UMAP_2","Sample_name","Cell_type_manual","GSE_ID","Purity","Cell_type_predicted","Age"))
+data.plot <- data.use %>% filter(!is.na(Cell_type_manual))
+
+ggplot(data.plot, aes(UMAP_1, UMAP_2)) + 
+  geom_point(inherit.aes = F, data = data.use,
+             aes(UMAP_1, UMAP_2), color="grey", size=.1, alpha=.1, show.legend = F) + 
+  geom_point(aes(color=Cell_type_manual), size=.1, alpha=.2, show.legend = F) + 
+  ggrepel::geom_text_repel(inherit.aes = F, data = get_label_pos(data.plot, emb = "UMAP", group.by="Cell_type_manual"), 
+                           aes(x,y,label=label), size=3)
+
+ggplot(data.use, aes(UMAP_1, UMAP_2)) + 
+  geom_point(aes(color=factor(Cell_type_predicted, levels = sample(ct.levels))), size=.1, alpha=.2, show.legend = F) + 
+  ggrepel::geom_text_repel(inherit.aes = F, data = get_label_pos(data.use, emb = "UMAP", group.by="Cell_type_predicted"), 
+                           aes(x,y,label=label), size=3)
+
+ggplot(data.use, aes(UMAP_1, UMAP_2)) + 
+  geom_point(aes(color=Purity), size=.1, alpha=.1, show.legend = T) + 
+  scale_color_gradientn(colours = c("#148CDD","#0DBFEA","#2DD103","#ECEE00","#FFA900"))
+```
+
+## Evaluation
+
+### Cell markers
+```{r, fig.width=12, fig.height=8}
+seu <- NormalizeData(seu)
+## 'mtca.markers' defined in R/vars.R
+DotPlot(seu, features = mtca.markers, group.by = "Cell_type_predicted") + RotatedAxis()
+```
+
+### Cell composition
+```{r, fig.width=10, fig.height=8}
+cell.comp <- data.use %>% 
+  group_by(Age, Cell_type_predicted) %>% 
+  dplyr::summarise(cells = n()) %>% 
+  ungroup() %>% 
+  group_by(Age) %>% 
+  mutate(total = sum(cells)) %>% 
+  filter(total >= 50)
+
+cell.comp %>% 
+  ggplot(aes(Age, cells, fill=Cell_type_predicted)) + 
+  geom_col(position="fill") + 
+  scale_y_continuous(labels = function(x) x*100) + 
+  labs(x="", y="% of cells") + 
+  coord_flip()
+```
+## Manual correction
+
+### Identify rare cell type
+
+```{r, fig.width=8, fig.height=7}
+DimPlot(seu, group.by = "Leiden", label = T) + NoLegend()
+DimPlot(seu, group.by = "Cell_type_predicted", label = T) + NoLegend()
+```
+
+```{r, fig.width=8, fig.height=7}
+DimPlot(seu, group.by = "Leiden", label = T) + NoLegend()
+DimPlot(seu, group.by = "Cell_type_predicted", label = T) + NoLegend()
+```
+
+
+```{r}
+Idents(seu) <- seu$Leiden
+
+seu.ds <- subset(seu, downsample = 200) # 200 cells per cluster
+DimPlot(seu.ds, group.by = "Leiden", label = T) + NoLegend()
+
+c33.markers <- FindMarkers(seu.ds, ident.1 = 33)
+```
+
+
+```{r}
+cellmeta <- seu@meta.data
+cellmeta$Cell_type_corrected <- as.character(cellmeta$Cell_type_predicted)
+
+## Musucle cells
+cellmeta$Cell_type_corrected <- ifelse(cellmeta$Leiden == 32, 
+                                       "Muscle cells", cellmeta$Cell_type_corrected)
+## 
+FeaturePlot(seu, features = c("Hoxa9","Gria1","Krt14"), combine = F)
+
+## Neurocyte
+cells <- CellSelector(FeaturePlot(seu, features = "Gria1"))
+cellmeta$Cell_type_corrected <- ifelse(rownames(cellmeta) %in% cells, 
+                                     "Neurocytes", cellmeta$Cell_type_corrected)
+
+## Epithelial cells
+cells <- CellSelector(FeaturePlot(seu, features = "Krt14"))
+cellmeta$Cell_type_corrected <- ifelse(rownames(cellmeta) %in% cells, 
+                                     "Epithelial cells", cellmeta$Cell_type_corrected)
+
+## Unknown (Hoxa9+)
+cells <- CellSelector(FeaturePlot(seu, features = "Krt14"))
+cellmeta$Cell_type_corrected <- ifelse(rownames(cellmeta) %in% cells, 
+                                       "Unknown (Hoxa9+)", cellmeta$Cell_type_corrected)
+
+
+## Macrophages
+FeaturePlot(seu, features = "Folr2")
+FeaturePlot(seu, features = "Fcrls")
+cellmeta$Cell_type_corrected <- ifelse(cellmeta$leiden %in% c(22), 
+                                     "Macrophages", cellmeta$Cell_type_corrected)
+
+## NK/T cells
+FeaturePlot(seu, features = "Cd3g")
+cells <- CellSelector(FeaturePlot(seu, features = "Cd3g"))
+cellmeta$Cell_type_corrected <- ifelse(rownames(cellmeta) %in% cells, 
+                                     "NK/T cells", cellmeta$Cell_type_corrected)
+
+## Neutrophils
+FeaturePlot(seu, features = "Ctsg")
+FeaturePlot(seu, features = "Retnlg")
+cells <- CellSelector(FeaturePlot(seu, features = "Cd3g"))
+cellmeta$Cell_type_corrected <- ifelse(rownames(cellmeta) %in% cells, 
+                                     "Neutrophils", cellmeta$Cell_type_corrected)
+```
+
+
+```{r}
+library(magrittr)
+
+cellmeta$Cell_type_manual %<>% as.character()
+cellmeta$Cell_type_predicted %<>% as.character()
+
+## labeled data
+cellmeta$Cell_type_corrected <- ifelse(cellmeta$GSE_ID == "GSE148032",
+                                       cellmeta$Cell_type_manual, 
+                                       cellmeta$Cell_type_corrected)
+cellmeta$Cell_type_corrected <- ifelse(is.na(cellmeta$Cell_type_corrected),
+                                       cellmeta$Cell_type_predicted, 
+                                       cellmeta$Cell_type_corrected)
+```
+
+
+```{r, fig.width=8, fig.height=8}
+seu$Cell_type_corrected <- cellmeta$Cell_type_corrected
+
+data.use <- FetchData(seu, vars = c("UMAP_1","UMAP_2","Sample_name","Cell_type_corrected","Age"))
+
+ggplot(data.use, aes(UMAP_1, UMAP_2)) + 
+  geom_point(aes(color=Cell_type_corrected), size=.1, alpha=.2, show.legend = F) + 
+  ggrepel::geom_text_repel(inherit.aes = F, 
+                           data = get_label_pos(data.use, emb = "UMAP", group.by="Cell_type_corrected"), 
+                           aes(x,y,label=label), size=3)
+```
+
+### Cell markers
+```{r}
+ct.levels <- c("Unknown (Hoxa9+)", "Neurocytes", 
+               "Macrophages", "NK/T cells", "Neutrophils", "Epithelial cells",
+               "CD34+ stromal cells","Endothelial cells", "Myoid cells", "Muscle cells",
+               "Leydig cells", "Sertoli cells", 
+               "Somatic progenitor cells", 
+               "Epiblast", "Mesoderm", "Mesenchyme",
+               "Hindgut & Visceral Endoderm", "Primitive Streak", "Specification PGCs", 
+               "Migrating PGCs", "Mitotic PGCs", "Mitotic arrest PGCs", 
+               "Quiescent prospermatogonia", "Transitional prospermatogonia", 
+               "undiff A spermatogonia", "type A spermatogonia", "type B spermatogonia", "pre Leptotene", 
+               "Leptotene", "Zygotene", "Pachytene", "Diplotene", 
+               "Meiotic metaphase", "Round spermatids", "Elongated spermatids")
+
+setdiff(unique(seu$Cell_type_corrected), ct.levels)
+seu$Cell_type_corrected <- factor(seu$Cell_type_corrected, levels = ct.levels)
+```
+
+
+```{r, fig.width=12, fig.height=8}
+DefaultAssay(seu) <- "RNA"
+
+features = c(
+  "Hoxa9", "Gria1", "Folr2", "Cd3g", "Retnlg", "Krt14", 
+  "Cd34","Pecam1","Acta2","Mustn1","Cyp11a1","Sox9",
+  "Vim","Dazl","Apoc3","T",
+  "Pou5f1","Mki67","Utf1","Dnmt3l","Id4","Gfra1","Nanos3","Esx1","Kit","Stra8","Dmrt1",
+  "Prdm9","Zcwpw1","Dmc1","Rad51ap2","Mlh3",
+  "Piwil1","Pou5f2","Ccna1","Sun5",
+  "Tex36","Tnp1","Prm1","Prm2")
+
+DotPlot(seu, features = features, group.by = "Cell_type_corrected") + RotatedAxis()
+```
+
+```{r, fig.width=8, fig.height=7}
+DimPlot(seu, group.by = "Cell_type_corrected", label = T) + NoLegend()
+```
+
+```{r}
+# saveRDS(seu@meta.data, "../results/07.label_transfer.mouse/mTCA.core.cellmeta.rds")
+# saveRDS(seu, "../results/07.label_transfer.mouse/mTCA.core.seurat.rds")
+```
+
+
+### Filter cells
+
+```{r}
+## check cell meta
+seu$RNA_snn_res.1 <- NULL
+seu$RNA_snn_res.2 <- NULL
+
+datasets <- list.files("../results/03.decontX_mouse", recursive = F, full.names = T)
+
+seu.correct <- pblapply(datasets, function(h5ad.file) {
+  sceasy::convertFormat(h5ad.file, from="anndata", to="seurat")
+}) %>% reduce(., merge)
+
+## bad cells: 
+##   (1) high express contaminated transcripts (eg. Prm1); 
+##   (2) High contamination rates via decontX
+seu$decontX_contamination <- seu.correct@meta.data[rownames(seu@meta.data), ]$decontX_contamination
+seu$Cell_QC <- ifelse(seu$Leiden %in% c(20), "Low", "High")
+seu$Cell_QC <- ifelse(seu$decontX_contamination > 0.4, "Low", seu$Cell_QC)
+```
+
+
+```{r}
+saveRDS(seu@meta.data, "../results/07.label_transfer.mouse/mTCA.core.cellmeta.rds")
+saveRDS(seu, "../results/07.label_transfer.mouse/mTCA.core.seurat.rds")
+sceasy::convertFormat(seu, from="seurat", to="anndata", main_layer = "counts",
+                      outFile="../results/07.label_transfer.mouse/mTCA.core.h5ad")
+```
+
+
+```{r}
+# seu <- readRDS("../results/07.label_transfer.mouse/mTCA.core.seurat.rds")
+# saveRDS(seu@meta.data, "../results/07.label_transfer.mouse/mTCA.core.cellmeta.rds")
+# 
+# cellmeta <- readRDS("../results/07.label_transfer.mouse/mTCA.core.cellmeta.rds")
+# h <- c("STRT-seq" = "STRT-Seq", "Drop-seq" = "Drop-Seq")
+# cellmeta$Platform <- .replace(as.character(cellmeta$Platform), h)
+# cellmeta$Age <- .replace(as.character(cellmeta$Age), corrected.mmu.age) # 'corrected.mmu.age' defined in R/vars.R
+# 
+# saveRDS(cellmeta, "../results/07.label_transfer.mouse/mTCA.core.cellmeta.rds")
+```

@@ -1,0 +1,606 @@
+---
+title: "Testicular cell atlas"
+author: "Jarning"
+date: "2021/12/30"
+output: html_document
+---
+
+## setup code
+
+```{r setup}
+pacman::p_unload(pacman::p_loaded(), character.only = TRUE)
+options(stringsAsFactors = FALSE)
+library(here)
+library(Seurat, lib.loc = "/home/software/R/seuratV3_env/")
+library(SeuratWrappers)
+library(tidyverse)
+source("R/utils.R")
+source("R/02.preprocess.utils.R")
+
+# global vars
+OUTDIR <- "../results/02.preprocess_human"
+safe_mkdir(OUTDIR)
+
+# check all human datasets
+datasets <- list.dirs("../data/matrix", recursive = F, full.names = F)
+datasets[grep("*human*", datasets)]
+```
+
+## Cell.Stem.Cell_2017_human_GSE86146
+
+### 1) load data
+```{r}
+gse_dataset = "Cell.Stem.Cell_2017_human_GSE86146"
+seu <- load_dataset(gse_dataset, species = "human")
+```
+
+### 2) filter cells
+```{r, fig.width=20, fig.height=9}
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = T)
+
+seu <- subset(seu, nFeature_RNA >= 1000 & percent.mt <= 15)
+
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = F)
+```
+
+### 3) add cell metadata
+```{r}
+# run umap and cluster
+seu <- seurat_one_step(seu, outpath = OUTDIR)
+
+# add metadata
+seu <- add_metadata(seu)
+
+## add published cell type
+INDIR = here("data/matrix", gse_dataset)
+pub.ct <- read.table(file.path(INDIR, "cell_type_published.txt"), sep = "\t", header = F, 
+                     col.names = c("cellID", "cell_type","age","sex"))
+metadata.new <- seu@meta.data
+metadata.new$Cell_type_published <- mapvalues.2(x = rownames(metadata.new), 
+                                                from = pub.ct$cellID, 
+                                                to = pub.ct$cell_type)
+metadata.new$Age <- mapvalues.2(x = rownames(metadata.new), 
+                                from = pub.ct$cellID, 
+                                to = pub.ct$age)
+metadata.new$Sex <- mapvalues.2(x = rownames(metadata.new), 
+                                from = pub.ct$cellID, 
+                                to = pub.ct$sex)
+seu@meta.data <- metadata.new
+
+# filter cells
+seu <- subset(seu, Sex == "Male")
+
+# show embeddings
+FeaturePlot(seu, features = "decontX_contamination")
+DimPlot(seu, group.by = "Cell_type_published", label = T)
+DimPlot(seu, label = T)
+
+# save data
+obj.name <- paste0(seu@project.name, ".seu.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+### 4) step1 clustering
+
+```{r}
+# gse_dataset = "Cell.Stem.Cell_2017_human_GSE86146"
+# seu.raw <- load_dataset(gse_dataset, species = "human")
+# 
+# ## add new cell meta
+# obj.name <- paste0(gse_dataset, ".seu.rds")
+# seu <- readRDS(file.path(OUTDIR, obj.name))
+# new.meta <- seu@meta.data
+# new.meta <- new.meta |> 
+#   mutate(percent.chrX = seu.raw$percent.chrX[rownames(new.meta)], 
+#          percent.chrY = seu.raw$percent.chrY[rownames(new.meta)], 
+#          .before="decontX_contamination")
+# seu@meta.data <- new.meta
+# 
+# saveRDS(seu, file.path(OUTDIR, obj.name))
+# rm("seu.raw")
+
+## redo umap
+seu <- RunUMAP(seu, reduction = "mnn", dims = 1:30)
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+
+## Cell.Rep_2018_human_GSE109037
+
+### 1) load data
+```{r}
+gse_dataset = "Cell.Rep_2018_human_GSE109037"
+seu <- load_dataset(gse_dataset, species = "human")
+```
+
+### 2) filter cells
+```{r, fig.width=20, fig.height=9}
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = T)
+
+seu <- subset(seu, nFeature_RNA >= 500 & percent.mt <= 15)
+
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = F)
+```
+
+### 3) add cell metadata
+```{r}
+# run umap and cluster
+seu <- seurat_one_step(seu, outpath = OUTDIR, do.plot = TRUE)
+
+# add metadata
+seu <- add_metadata(seu)
+
+# show embeddings
+FeaturePlot(seu, features = "decontX_contamination")
+DimPlot(seu, group.by = "Cell_enrichment", label = T)
+DimPlot(seu, label = T)
+
+# save data
+obj.name <- paste0(seu@project.name, ".seu.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+### 4) step1 clustering
+
+```{r}
+# gse_dataset = "Cell.Rep_2018_human_GSE109037"
+# seu.raw <- load_dataset(gse_dataset, species = "human")
+# 
+# ## add new cell meta
+# obj.name <- paste0(gse_dataset, ".seu.rds")
+# obj.name
+# seu <- readRDS(file.path(OUTDIR, obj.name))
+# new.meta <- seu@meta.data
+# new.meta <- new.meta |> 
+#   mutate(percent.chrX = seu.raw$percent.chrX[rownames(new.meta)], 
+#          percent.chrY = seu.raw$percent.chrY[rownames(new.meta)], 
+#          .before="decontX_contamination")
+# seu@meta.data <- new.meta
+# 
+# saveRDS(seu, file.path(OUTDIR, obj.name))
+# rm("seu.raw")
+
+## filter cells
+DimPlot(seu, group.by = "RNA_snn_res.1", label = T)
+FeaturePlot(seu, features = "decontX_contamination")
+seu <- subset(seu, RNA_snn_res.1 %notin% c(1,9,14))
+
+## redo umap
+seu <- RunUMAP(seu, reduction = "mnn", dims = 1:30)
+
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+obj.name
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+## Cell.Res_2018_human_GSE120508
+
+### 1) load data
+```{r}
+gse_dataset = "Cell.Res_2018_human_GSE120508"
+seu <- load_dataset(gse_dataset, species = "human")
+```
+
+### 2) filter cells
+```{r, fig.width=20, fig.height=9}
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = T)
+
+seu <- subset(seu, nFeature_RNA >= 500 & percent.mt <= 15)
+
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = F)
+```
+
+### 3) add cell metadata
+```{r}
+# run umap and cluster
+seu <- seurat_one_step(seu, outpath = OUTDIR)
+
+# add metadata
+seu <- add_metadata(seu)
+
+# add public cell type
+INDIR = here("data/matrix", gse_dataset)
+pub.ct <- read.table(file.path(INDIR, "cell_type_published.txt"), sep = "\t", header = F, 
+                     col.names = c("cellID", "cell_type"))
+
+metadata.new <- seu@meta.data
+metadata.new$Cell_type_published <- mapvalues.2(x = rownames(metadata.new), 
+                                                from = pub.ct$cellID, 
+                                                to = pub.ct$cell_type)
+seu@meta.data <- metadata.new
+
+# show embeddings
+FeaturePlot(seu, features = "decontX_contamination")
+DimPlot(seu, group.by = "Cell_type_published", label = T)
+DimPlot(seu, label = T)
+
+# save data
+obj.name <- paste0(seu@project.name, ".seu.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+### 4) step1 clustering
+
+```{r}
+# gse_dataset = "Cell.Stem.Cell_2018_human_GSE106487"
+# seu.raw <- load_dataset(gse_dataset, species = "human")
+# 
+# ## add new cell meta
+# obj.name <- paste0(gse_dataset, ".seu.rds")
+# obj.name
+# seu <- readRDS(file.path(OUTDIR, obj.name))
+# new.meta <- seu@meta.data
+# new.meta <- new.meta |> 
+#   mutate(percent.chrX = seu.raw$percent.chrX[rownames(new.meta)], 
+#          percent.chrY = seu.raw$percent.chrY[rownames(new.meta)], 
+#          .before="decontX_contamination")
+# seu@meta.data <- new.meta
+# 
+# saveRDS(seu, file.path(OUTDIR, obj.name))
+# rm("seu.raw")
+
+## filter cells
+DimPlot(seu, group.by = "RNA_snn_res.1", label = T)
+FeaturePlot(seu, features = "decontX_contamination")
+seu <- subset(seu, Cell_published %notin% c(3,11))
+
+## redo umap
+seu <- RunUMAP(seu, reduction = "mnn", dims = 1:30)
+
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+obj.name
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+## Cell.Stem.Cell_2018_human_GSE106487
+
+### 1) load data
+```{r}
+gse_dataset = "Cell.Stem.Cell_2018_human_GSE106487"
+seu <- load_dataset(gse_dataset, species = "human")
+```
+
+### 2) filter cells
+```{r, fig.width=20, fig.height=9}
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = T)
+
+seu <- subset(seu, nFeature_RNA >= 1000 & percent.mt <= 15)
+
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = F)
+```
+
+### 3) add cell metadata
+```{r}
+# run umap and cluster
+seu <- seurat_one_step(seu, outpath = OUTDIR)
+
+# add metadata
+seu <- add_metadata(seu)
+
+# add public cell type
+INDIR = here("data/matrix", gse_dataset)
+pub.ct <- read.table(file.path(INDIR, "cell_type_published.txt"), sep = "\t", header = F, 
+                     col.names = c("cellID", "cell_type"))
+
+metadata.new <- seu@meta.data
+metadata.new$Cell_type_published <- mapvalues.2(x = rownames(metadata.new), 
+                                                from = pub.ct$cellID, 
+                                                to = pub.ct$cell_type)
+seu@meta.data <- metadata.new
+
+# show embeddings
+FeaturePlot(seu, features = "decontX_contamination")
+DimPlot(seu, group.by = "Cell_type_published", label = T)
+DimPlot(seu, label = T)
+
+# save data
+obj.name <- paste0(seu@project.name, ".seu.hc.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+### 4) step1 clustering
+
+```{r}
+# gse_dataset = "Cell.Res_2018_human_GSE120508"
+# seu.raw <- load_dataset(gse_dataset, species = "human")
+# 
+# ## add new cell meta
+# obj.name <- paste0(gse_dataset, ".seu.rds")
+# obj.name
+# seu <- readRDS(file.path(OUTDIR, obj.name))
+# new.meta <- seu@meta.data
+# new.meta <- new.meta |> 
+#   mutate(percent.chrX = seu.raw$percent.chrX[rownames(new.meta)], 
+#          percent.chrY = seu.raw$percent.chrY[rownames(new.meta)], 
+#          .before="decontX_contamination")
+# seu@meta.data <- new.meta
+# 
+# saveRDS(seu, file.path(OUTDIR, obj.name))
+# rm("seu.raw")
+
+## filter cells
+DimPlot(seu, group.by = "RNA_snn_res.1", label = T)
+FeaturePlot(seu, features = "decontX_contamination")
+kept.cells <- rownames(subset(seu@meta.data, !is.na(seu$Cell_type_published)))
+seu <- subset(seu, cells = kept.cells)
+
+## redo umap
+seu <- RunUMAP(seu, reduction = "mnn", dims = 1:30)
+
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+obj.name
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+## Cell.Rep_2019_human_GSE124263
+
+### 1) load data
+```{r}
+gse_dataset = "Cell.Rep_2019_human_GSE124263"
+seu <- load_dataset(gse_dataset, species = "human")
+```
+
+### 2) filter cells
+```{r, fig.width=20, fig.height=9}
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = T)
+
+seu <- subset(seu, nFeature_RNA >= 500 & percent.mt <= 15)
+
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = F)
+```
+
+### 3) add cell metadata
+```{r}
+# run umap and cluster
+seu <- seurat_one_step(seu, outpath = OUTDIR)
+
+# add metadata
+seu <- add_metadata(seu)
+
+# show embeddings
+FeaturePlot(seu, features = "decontX_contamination")
+DimPlot(seu, group.by = "Sample_name", label = T)
+DimPlot(seu, label = T)
+
+# save data
+obj.name <- paste0(seu@project.name, ".seu.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+### 4) step1 clustering
+
+```{r}
+# gse_dataset = "Cell.Rep_2019_human_GSE124263"
+# seu.raw <- load_dataset(gse_dataset, species = "human")
+# 
+# ## add new cell meta
+# obj.name <- paste0(gse_dataset, ".seu.rds")
+# obj.name
+# seu <- readRDS(file.path(OUTDIR, obj.name))
+# new.meta <- seu@meta.data
+# new.meta <- new.meta |> 
+#   mutate(percent.chrX = seu.raw$percent.chrX[rownames(new.meta)], 
+#          percent.chrY = seu.raw$percent.chrY[rownames(new.meta)], 
+#          .before="decontX_contamination")
+# seu@meta.data <- new.meta
+# 
+# saveRDS(seu, file.path(OUTDIR, obj.name))
+# rm("seu.raw")
+
+## filter cells
+DimPlot(seu, group.by = "RNA_snn_res.1", label = T)
+FeaturePlot(seu, features = "decontX_contamination")
+## remove doublets
+seu <- DF_main(seu, split.by = "GSM_ID")
+DimPlot(seu, group.by = "DF.classifications", label = T)
+seu <- subset(seu, DF.classifications == "Singlet")
+seu$DF.classifications <- NULL
+
+## redo umap
+seu <- RunUMAP(seu, reduction = "mnn", dims = 1:30)
+
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+obj.name
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+## Cell.Stem.Cell_2020_human_GSE134144
+
+### 1) load data
+```{r}
+gse_dataset = "Cell.Stem.Cell_2020_human_GSE134144"
+seu <- load_dataset(gse_dataset, species = "human")
+```
+
+### 2) filter cells
+```{r, fig.width=20, fig.height=9}
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = T)
+
+seu <- subset(seu, nFeature_RNA >= 500 & percent.mt <= 15)
+
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = F)
+```
+
+### 3) add cell metadata
+```{r}
+# run umap and cluster
+seu <- seurat_one_step(seu, outpath = OUTDIR)
+
+# add metadata
+seu <- add_metadata(seu)
+
+# add public cell type
+INDIR = here("data/matrix", gse_dataset)
+pub.ct <- read.table(file.path(INDIR, "cell_type_published.txt"), sep = "\t", header = F, 
+                     col.names = c("cellID", "cell_type"))
+metadata.new <- seu@meta.data
+
+metadata.new$Cell_type_published <- mapvalues.2(x = rownames(metadata.new), 
+                                                from = pub.ct$cellID, 
+                                                to = pub.ct$cell_type)
+seu@meta.data <- metadata.new
+
+# show embeddings
+FeaturePlot(seu, features = "decontX_contamination")
+DimPlot(seu, group.by = "Sample_name", label = T)
+DimPlot(seu, label = T)
+
+# save data
+obj.name <- paste0(seu@project.name, ".seu.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+### 4) step1 clustering
+
+```{r}
+# gse_dataset = "Cell.Stem.Cell_2020_human_GSE134144"
+# seu.raw <- load_dataset(gse_dataset, species = "human")
+# 
+# ## add new cell meta
+# obj.name <- paste0(gse_dataset, ".seu.rds")
+# obj.name
+# seu <- readRDS(file.path(OUTDIR, obj.name))
+# new.meta <- seu@meta.data
+# new.meta <- new.meta |> 
+#   mutate(percent.chrX = seu.raw$percent.chrX[rownames(new.meta)], 
+#          percent.chrY = seu.raw$percent.chrY[rownames(new.meta)], 
+#          .before="decontX_contamination")
+# seu@meta.data <- new.meta
+# 
+# saveRDS(seu, file.path(OUTDIR, obj.name))
+# rm("seu.raw")
+
+## filter cells
+DimPlot(seu, group.by = "RNA_snn_res.1", label = T)
+FeaturePlot(seu, features = "decontX_contamination")
+
+## remove doublets
+seu <- DF_main(seu, split.by = "GSM_ID")
+DimPlot(seu, group.by = "DF.classifications", label = T)
+seu <- subset(seu, DF.classifications == "Singlet")
+seu$DF.classifications <- NULL
+
+## redo umap
+seu <- RunUMAP(seu, reduction = "mnn", dims = 1:30)
+
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+obj.name
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+## Nat.Com_2020_human_GSE149512
+
+### 1) load data
+```{r}
+gse_dataset = "Nat.Com_2020_human_GSE149512"
+seu <- load_dataset(gse_dataset, species = "human")
+```
+
+### 2) filter cells
+```{r, fig.width=20, fig.height=9}
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = T)
+
+seu <- subset(seu, nFeature_RNA >= 500 & percent.mt <= 15)
+
+VlnPlot(object = seu, 
+        features = c("nFeature_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2, pt.size = 0, log = F)
+```
+
+### 3) add cell metadata
+```{r}
+# run umap and cluster
+seu <- seurat_one_step(seu, outpath = OUTDIR)
+
+# add metadata
+seu <- add_metadata(seu)
+
+# show embeddings
+FeaturePlot(seu, features = "decontX_contamination")
+DimPlot(seu, group.by = "Sample_name", label = T)
+DimPlot(seu, label = T)
+
+# save data
+obj.name <- paste0(seu@project.name, ".seu.rds")
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+### 4) step1 clustering
+
+```{r}
+# gse_dataset = "Nat.Com_2020_human_GSE149512"
+# seu.raw <- load_dataset(gse_dataset, species = "human")
+# 
+# ## add new cell meta
+# obj.name <- paste0(gse_dataset, ".seu.rds")
+# obj.name
+# seu <- readRDS(file.path(OUTDIR, obj.name))
+# new.meta <- seu@meta.data
+# new.meta <- new.meta |> 
+#   mutate(percent.chrX = seu.raw$percent.chrX[rownames(new.meta)], 
+#          percent.chrY = seu.raw$percent.chrY[rownames(new.meta)], 
+#          .before="decontX_contamination")
+# seu@meta.data <- new.meta
+# 
+# saveRDS(seu, file.path(OUTDIR, obj.name))
+# rm("seu.raw")
+
+## filter cells
+DimPlot(seu, group.by = "RNA_snn_res.1", label = T)
+FeaturePlot(seu, features = "decontX_contamination")
+
+## remove doublets
+seu <- subset(seu, RNA_snn_res.1 %notin% c(3))
+
+## redo umap
+seu <- RunUMAP(seu, reduction = "mnn", dims = 1:30)
+
+obj.name <- paste0(gse_dataset, ".seu.hc.rds")
+obj.name
+saveRDS(seu, file.path(OUTDIR, obj.name))
+```
+
+## Merge datasets
+
+```{r}
+seu.merged <- list(
+  "Li.2017" = load_processed_dataset("Cell.Stem.Cell_2017_human_GSE86146"),
+  "Hermann.2018" = load_processed_dataset("Cell.Rep_2018_human_GSE109037"),
+  "Guo.2018" = load_processed_dataset("Cell.Res_2018_human_GSE120508"),
+  "Wang.2018" = load_processed_dataset("Cell.Stem.Cell_2018_human_GSE106487"),
+  "Sohni.2019" = load_processed_dataset("Cell.Rep_2019_human_GSE124263"),
+  "Guo.2020" = load_processed_dataset("Cell.Stem.Cell_2020_human_GSE134144"),
+  "Zhao.2020" = load_processed_dataset("Nat.Com_2020_human_GSE149512")
+) %>% reduce(., merge)
+
+sceasy::convertFormat(seu.merged, from="seurat", to="anndata", main_layer = "counts",
+                      outFile=file.path(OUTDIR, 'TCA_human.processed.h5ad'))
+```
+

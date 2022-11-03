@@ -1,0 +1,247 @@
+---
+title: "Testicular cell atlas"
+author: "Jarning"
+date: "2022/1/11"
+output: html_document
+---
+
+```{r setup}
+options(stringsAsFactors = FALSE)
+library(tidyverse)
+library(Seurat, lib.loc = "/home/software/R/seuratV3_env/")
+source("R/00.theme.R")
+source("R/utils.R")
+source("R/vars.R")
+```
+
+## Load results
+
+```{r}
+seu <- sceasy::convertFormat("../results/02.preprocess_human/TCA_human.processed.h5ad", from = "anndata", to = "seurat")
+pred.label <- readRDS("../results/07.label_transfer.human/hTCA.predicted_labels.rds")
+labeled.ds <- readRDS("../results/07.label_transfer.human/hTCA.AUCell.labeled.rds")
+umap.emb <- read.csv("../results/04.scvi/TCA_human.emb_umap.csv", row.names = 1)
+scvi.emb <- read.csv("../results/04.scvi/TCA_human.emb_scvi.csv", row.names = 1)
+old.meta <- read.csv("../results/04.scvi/TCA_human.cellmeta.csv", row.names = 1)
+
+seu$Cell_type_predicted <- pred.label[rownames(seu@meta.data), ]$pred.label
+seu$Purity <- pred.label[rownames(seu@meta.data), ]$purity
+
+ct.levels <- c("Macrophages", "Endothelial cells", "Myoid cells", "Leydig precursor", "Leydig cells", "Sertoli cells", "Muscle cells",
+               "OCT4+ FGCs", "OCT4+ MKI67+ FGCs", "OCT4- FGCs", "SSCs", "Differentiated spermatogonia", "pre Leptotene", 
+               "Leptotene", "Zygotene", "Pachytene", "Diplotene", 
+               "Meiotic metaphase", "Round spermatids", "Elongated spermatids")
+
+setdiff(unique(seu$Cell_type_predicted), ct.levels)
+seu$Cell_type_predicted <- factor(seu$Cell_type_predicted, levels = ct.levels)
+seu[["umap"]] <- CreateDimReducObject(as.matrix(umap.emb))
+seu[["scvi"]] <- CreateDimReducObject(as.matrix(scvi.emb))
+seu$Cell_type_manual <- mapvalues.2(rownames(seu@meta.data), from = rownames(labeled.ds), to = as.character(labeled.ds$Cell_type_manual))
+seu$Leiden <- old.meta$leiden
+```
+
+
+```{r, fig.width=8, fig.height=8}
+data.use <- FetchData(seu, vars = c("UMAP_1","UMAP_2","Sample_name","Cell_type_manual","GSE_ID","Purity","Cell_type_predicted","Leiden"))
+data.plot <- data.use %>% filter(!is.na(Cell_type_manual))
+
+ggplot(data.plot, aes(UMAP_1, UMAP_2)) + 
+  geom_point(inherit.aes = F, data = data.use,
+             aes(UMAP_1, UMAP_2), color="grey", size=.1, alpha=.1, show.legend = F) + 
+  geom_point(aes(color=Cell_type_manual), size=.1, alpha=1, show.legend = F) + 
+  ggrepel::geom_text_repel(inherit.aes = F, data = get_label_pos(data.plot, emb = "UMAP", group.by="Cell_type_manual"), 
+                           aes(x,y,label=label), size=3) + 
+  ggsci::scale_color_d3("category20")
+
+ggplot(data.use, aes(UMAP_1, UMAP_2)) + 
+  geom_point(aes(color=Cell_type_predicted), size=.1, alpha=.1, show.legend = F) + 
+  facet_wrap(~GSE_ID, ncol = 3)
+
+ggplot(data.use, aes(UMAP_1, UMAP_2)) + 
+  geom_point(aes(color=Cell_type_predicted), size=.1, alpha=.2, show.legend = F) + 
+  ggrepel::geom_text_repel(inherit.aes = F, data = get_label_pos(data.use, emb = "UMAP", group.by="Cell_type_predicted"), 
+                           aes(x,y,label=label), size=3) + 
+  ggsci::scale_color_d3("category20")
+
+ggplot(data.use, aes(UMAP_1, UMAP_2)) + 
+  geom_point(aes(color=Purity), size=.1, alpha=.1, show.legend = T) + 
+  scale_color_gradientn(colours = c("#148CDD","#0DBFEA","#2DD103","#ECEE00","#FFA900"))
+```
+
+## Evaluation
+
+### Cell markers
+```{r, fig.width=12, fig.height=8}
+DefaultAssay(seu) <- "RNA"
+seu <- NormalizeData(seu)
+DotPlot(seu, features = htca.markers, group.by = "Cell_type_predicted") + RotatedAxis()
+```
+
+### Sample composition
+```{r, fig.width=10, fig.height=8}
+cell.comp <- data.use %>% 
+  group_by(Sample_name, Cell_type_predicted) %>% 
+  summarise(cells = n()) %>% 
+  ungroup() %>% 
+  group_by(Sample_name) %>% 
+  mutate(total = sum(cells)) %>% 
+  filter(total >= 50)
+
+cell.comp %>% 
+  ggplot(aes(Sample_name, cells, fill=Cell_type_predicted)) + 
+  geom_col(position="fill") + 
+  scale_y_continuous(labels = function(x) x*100) + 
+  labs(x="", y="% of cells") + 
+  coord_flip() + 
+  ggsci::scale_fill_d3("category20")
+```
+
+## Manual correction
+
+### Identify rare cell type
+
+```{r, fig.width=8, fig.height=7}
+DefaultAssay(seu) <- "RNA"
+DimPlot(seu, group.by = "Leiden", label = T) + NoLegend()
+```
+
+```{r}
+Idents(seu) <- seu$Leiden
+
+seu.ds <- subset(seu, downsample = 200) # 200 cells per cluster
+DimPlot(seu.ds, group.by = "Leiden", label = T) + NoLegend()
+
+c18.markers <- FindMarkers(seu.ds, ident.1 = 18)
+c21.markers <- FindMarkers(seu.ds, ident.1 = 21)
+c23.markers <- FindMarkers(seu.ds, ident.1 = 23)
+c24.markers <- FindMarkers(seu.ds, ident.1 = 24)
+c26.markers <- FindMarkers(seu.ds, ident.1 = 26)
+c28.markers <- FindMarkers(seu.ds, ident.1 = 28)
+c29.markers <- FindMarkers(seu.ds, ident.1 = 29)
+c30.markers <- FindMarkers(seu.ds, ident.1 = 30)
+c31.markers <- FindMarkers(seu.ds, ident.1 = 31)
+c32.markers <- FindMarkers(seu.ds, ident.1 = 32)
+c33.markers <- FindMarkers(seu.ds, ident.1 = 33)
+```
+
+
+```{r, fig.width=8, fig.height=7}
+FeaturePlot(seu, features = head(rownames(c18.markers),4), ncol = 2)
+FeaturePlot(seu, features = head(rownames(c21.markers),4), ncol = 2)
+FeaturePlot(seu, features = head(rownames(c23.markers),4), ncol = 2)
+FeaturePlot(seu, features = head(rownames(c24.markers),4), ncol = 2)
+FeaturePlot(seu, features = head(rownames(c26.markers),4), ncol = 2)
+FeaturePlot(seu, features = head(rownames(c28.markers),4), ncol = 2)
+FeaturePlot(seu, features = head(rownames(c29.markers),4), ncol = 2)
+FeaturePlot(seu, features = head(rownames(c30.markers),8), ncol = 2)
+FeaturePlot(seu, features = head(rownames(c31.markers),4), ncol = 2)
+FeaturePlot(seu, features = head(rownames(c32.markers),4), ncol = 2)
+FeaturePlot(seu, features = head(rownames(c33.markers),4), ncol = 2)
+```
+
+
+
+```{r}
+gene.list <- list(
+  c28 = head(rownames(c28.markers), 25),
+  c30 = head(rownames(c30.markers), 25),
+  c31 = head(rownames(c31.markers), 25),
+  c32 = head(rownames(c32.markers), 25),
+  c33 = head(rownames(c33.markers), 25)
+)
+
+write_tsv(gene.list %>% as.data.frame(), 
+          "../results/07.label_transfer.human/rare_population.markers.tsv")
+
+term2gene <- readRDS("../data/gene_set/HCL_TableS2_full.human_symbol.rds")
+
+e.res <- lapply(gene.list, function(xx) {
+  y <- clusterProfiler::enricher(xx, TERM2GENE=term2gene, minGSSize=20)
+  return(as.data.frame(y))
+})
+
+names(e.res) <- names(gene.list)
+
+final.res <- lapply(seq_along(e.res), function(ii) {
+  xx <- e.res[[ii]]
+  if(nrow(xx)) {
+    xx %>% 
+      mutate(component = names(e.res)[ii])
+  } else {
+    NULL
+  }
+}) %>% do.call(rbind, .)
+
+write_tsv(final.res, "../results/07.label_transfer.human/rare_population.HCL_TableS2_full.tsv")
+```
+
+ref
+- C28, INSL3+ Leydig cells, https://academic.oup.com/humrep/article/29/8/1637/2914002
+
+```{r}
+clu2ct <- c(
+  "25" = "T cells",
+  "28" = "INSL3+ Leydig cells",
+  "31" = "CCL21+ Endothelial cells",
+  "32" = "Mast cells",
+  "33" = "Erythrocyte"
+)
+```
+
+```{r}
+seu$Cell_type_corrected <- mapvalues.2(x = as.character(seu$Leiden), from = names(clu2ct), to = clu2ct)
+
+seu$Cell_type_corrected <- ifelse(is.na(seu$Cell_type_corrected), 
+                                  as.character(seu$Cell_type_predicted), 
+                                  seu$Cell_type_corrected)
+```
+
+```{r}
+B.cells <- CellSelector(FeaturePlot(seu, features = "JCHAIN") + NoLegend())
+CLDN3.cells <- CellSelector(FeaturePlot(seu, features = "CLDN3") + NoLegend())
+
+seu$Cell_type_corrected <- ifelse(rownames(seu@meta.data) %in% B.cells, "B cells", seu$Cell_type_corrected)
+seu$Cell_type_corrected <- ifelse(rownames(seu@meta.data) %in% CLDN3.cells, "CLDN3+ Sertoli cells", seu$Cell_type_corrected)
+```
+
+```{r, fig.width=8, fig.height=7}
+DimPlot(seu, group.by = "Cell_type_corrected", label = T) + NoLegend()
+```
+
+```{r}
+saveRDS(seu@meta.data, "../results/07.label_transfer.human/hTCA.core.cellmeta.rds")
+saveRDS(seu, "../results/07.label_transfer.human/hTCA.core.seurat.rds")
+```
+
+### Filter cells
+
+```{r}
+## check cell meta
+seu$RNA_snn_res.1 <- NULL
+
+## bad cells: 
+##   (1) high express contaminated transcripts (eg. PRM1); 
+##   (2) High contamination rates via decontX
+FeaturePlot(seu, features = "decontX_contamination")
+FeaturePlot(seu, features = "PRM1")
+DimPlot(seu, group.by = "Leiden", label = T) + NoLegend()
+DimPlot(seu, group.by = "Condition")
+
+seu$Cell_QC <- ifelse(seu$Leiden %in% c(5,16,22,24,26,29), "Low", "High")
+seu.hq <- subset(seu, Cell_QC == "High")
+seu.hq$Cell_QC <- NULL
+
+FeaturePlot(seu.hq, features = "decontX_contamination")
+FeaturePlot(seu.hq, features = "PRM1")
+DimPlot(seu.hq, group.by = "Leiden", label = T) + NoLegend()
+DimPlot(seu.hq, group.by = "Cell_type_corrected", label = T) + NoLegend()
+```
+
+```{r}
+saveRDS(seu.hq@meta.data, "../results/07.label_transfer.human/hTCA.core.cellmeta.rds")
+saveRDS(seu.hq, "../results/07.label_transfer.human/hTCA.core.seurat.rds")
+
+sceasy::convertFormat(seu.hq, from="seurat", to="anndata", main_layer = "counts",
+                      outFile="../results/07.label_transfer.human/hTCA.core.h5ad")
+```
+

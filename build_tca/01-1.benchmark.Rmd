@@ -1,0 +1,179 @@
+---
+title: "Testicular cell atlas"
+author: "Jarning"
+date: "2021/12/24"
+output: html_document
+---
+
+## 0. setup code
+
+```{r setup}
+options(readr.show_col_types = FALSE, stringsAsFactors = FALSE)
+library(Matrix)
+library(pbapply)
+library(tidyverse)
+source("R/00.theme.R")
+source("R/01.benchmark.utils.R")
+source("R/utils.R")
+
+OUTDIR <- "../results/01.benchmark"
+safe_mkdir(OUTDIR)
+```
+
+## 1. 比较不同方法得到的cell barcode序列
+
+```{r}
+samples <- list.dirs("../data/benchmark/10X_matrix/", full.names = F, recursive = F)
+kb_cr.bc <- lapply(samples, kb_cr_barcodes) |> do.call(rbind, .)
+solo_cr.bc <- lapply(samples, solo_cr_barcodes) |> do.call(rbind, .)
+
+solo_cr.bc |> 
+  ggplot(aes(sample, set_size, fill=set_name)) + 
+  labs(x="", y="Number of barcodes", title = "STARsolo vs Cellranger") + 
+  geom_col() + 
+  geom_text(inherit.aes = F, data = . |> subset(set_name == "common"), 
+            aes(sample, total-max(total)*0.1, label=paste0(round(set_perc, 2), "%"))) + 
+  coord_flip()
+ggsave("../results/01.benchmark/solo_vs_cr.bc.pdf", width = 7, height = 5)
+
+
+kb_cr.bc |> 
+  ggplot(aes(sample, set_size, fill=set_name)) + 
+  labs(x="", y="Number of barcodes", title = "KB vs Cellranger") + 
+  geom_col() + 
+  geom_text(inherit.aes = F, data = . |> subset(set_name == "common"), 
+            aes(sample, total-max(total)*0.1, label=paste0(round(set_perc, 2), "%"))) + 
+  coord_flip()
+ggsave("../results/01.benchmark/kb_vs_cr.bc.pdf", width = 7, height = 5)
+```
+
+## 2. 比较不同方法得到的单个细胞UMI数量
+
+```{r, message=FALSE}
+# load sparse matrix
+cr_mm.list <- pblapply(samples, read_cr_sparse)
+names(cr_mm.list) <- samples
+kb_mm.list <- pblapply(samples, read_kb_sparse)
+names(kb_mm.list) <- samples
+solo_mm.list <- pblapply(samples, read_solo_sparse)
+names(solo_mm.list) <- samples
+
+# KB vs Cellranger
+kb_cr.umi <- pblapply(samples, function(xx) {
+  kb_cr_umi(sample = xx, 
+            kb_mm = kb_mm.list[[xx]], 
+            cr_mm = cr_mm.list[[xx]])
+}) |> do.call(rbind, .)
+
+# plot
+kb_cr.umi |> 
+  ggplot(aes(kb, cr, color=sample)) + 
+  labs(x = "nUMI (KB)", y = "nUMI (Cellranger)") + 
+  geom_point(size = 0.5, alpha=0.1) + 
+  geom_abline(intercept = 0, slope = 1, linetype="dashed", color=2) + 
+  scale_x_log10() + 
+  scale_y_log10() + 
+  facet_wrap(~sample) + 
+  theme(
+    legend.position = "none"
+  )
+ggsave("../results/01.benchmark/kb_vs_cr.nUMI.png", width = 7, height = 5)
+
+# STARsolo vs Cellranger
+solo_cr.umi <- pblapply(samples, function(xx) {
+  solo_cr_umi(sample = xx, 
+              solo_mm = solo_mm.list[[xx]], 
+              cr_mm = cr_mm.list[[xx]])
+}) |> do.call(rbind, .)
+
+# plot
+solo_cr.umi |> 
+  ggplot(aes(solo, cr, color=sample)) + 
+  labs(x = "nUMI (STARsolo)", y = "nUMI (Cellranger)") + 
+  geom_point(size = 0.5, alpha=0.1) + 
+  geom_abline(intercept = 0, slope = 1, linetype="dashed", color=2) + 
+  scale_x_log10() + 
+  scale_y_log10() + 
+  facet_wrap(~sample) + 
+  theme(
+    legend.position = "none"
+  )
+ggsave("../results/01.benchmark/solo_vs_cr.nUMI.png", width = 7, height = 5)
+```
+
+## 3. 比较不同方法单细胞转录组的相关性
+
+```{r}
+# KB vs Cellranger
+kb_cr.cor <- pblapply(samples, function(xx) {
+  pair_column_cor(kb_mm.list[[xx]], cr_mm.list[[xx]])
+}) |> do.call(cbind, .)
+colnames(kb_cr.cor) <- samples
+kb_cr.cor <- kb_cr.cor |> 
+  as.data.frame() |> 
+  pivot_longer(cols = 1:ncol(.), names_to = "sample", values_to = "corr")
+
+# plot
+kb_cr.cor |> 
+  ggplot(aes(sample, corr, fill=sample)) + 
+  geom_violin(scale="width") + 
+  labs(x="", y="Pearson correlation coefficient") + 
+  coord_flip() + 
+  theme(
+    legend.position = "none"
+  )
+
+# STARsolo vs Cellranger
+solo_cr.cor <- pblapply(samples, function(xx) {
+  pair_column_cor(solo_mm.list[[xx]], cr_mm.list[[xx]])
+}) |> do.call(cbind, .)
+
+colnames(solo_cr.cor) <- samples
+solo_cr.cor <- solo_cr.cor |> 
+  as.data.frame() |> 
+  pivot_longer(cols = 1:ncol(.), names_to = "sample", values_to = "corr")
+
+# plot
+solo_cr.cor |> 
+  ggplot(aes(sample, corr, fill=sample)) + 
+  geom_violin(scale="width") + 
+  labs(x="", y="Pearson correlation coefficient") + 
+  coord_flip() + 
+  theme(
+    legend.position = "none"
+  )
+
+# merge plot
+kb_cr.cor <- kb_cr.cor |> 
+  mutate(method = "kb")
+solo_cr.cor <- solo_cr.cor |> 
+  mutate(method = "solo")
+data.plot <- rbind(kb_cr.cor, solo_cr.cor)
+
+# p.value via t.test
+sapply(samples, function(xx) {
+  data.tmp <- data.plot |> subset(sample == xx)
+  data.tmp.a <- subset(data.tmp, method == "kb")$corr
+  data.tmp.b <- subset(data.tmp, method == "solo")$corr
+  t.test(data.tmp.a, data.tmp.b)$p.value
+})
+
+data.plot |>
+  ggplot(aes(x=method, corr, fill=method)) + 
+  geom_violin(scale="width") + 
+  labs(x="", y="Pearson correlation coefficient", 
+       title = "Pearson correlation with cellranger per cell") + 
+  coord_cartesian(ylim = c(0.9,1.05)) + 
+  scale_y_continuous(breaks = c(0.9,0.95,1)) + 
+  ggsignif::geom_signif(comparisons = list(c("solo", "kb")), 
+                        y_position = .97,
+                        map_signif_level = T,
+                        tip_length=0, textsize = 6) + 
+  facet_wrap(~sample, nrow = 2) + 
+  theme(
+    legend.position = "none"
+  )
+
+ggsave("../results/01.benchmark/kb_solo.pcc_to_cr.pdf", width = 7, height = 5)
+```
+

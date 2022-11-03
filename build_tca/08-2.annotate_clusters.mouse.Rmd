@@ -1,0 +1,239 @@
+---
+title: "Testicular cell atlas"
+author: "Jarning"
+date: "2022/4/16"
+output: html_document
+---
+
+```{r setup}
+options(stringsAsFactors = FALSE)
+library(Seurat, lib.loc = "/home/software/R/seuratV3_env/")
+library(magrittr)
+library(tidyverse)
+library(patchwork)
+source("R/utils.R")
+source("R/00.theme.R")
+source("R/08.annotate_clusters.utils.R")
+```
+
+## 1. Load data
+
+```{r}
+cellmeta <- readRDS("../results/07.label_transfer.mouse/mTCA.core.cellmeta.rds")
+cellemb <- read.csv("../results/08.iterative_clustering/mTCA_cellmeta_iter_clusters.csv", row.names = 1)
+cellmeta <- cellmeta[rownames(cellemb), ]
+cellmeta <- cbind(cellmeta, cellemb)
+cellmeta <- cellmeta %>% rename_with(Hmisc::capitalize, starts_with("leiden"))
+```
+
+```{r}
+# sort(table(subset(cellmeta, Leiden_r4 %in% c("3,1,1"))$Cell_type_corrected))
+```
+
+
+## 2. Consensus metrics
+
+```{r, fig.width=10, fig.height=8}
+cn = "Leiden_r1"
+cellmeta <- calculate.consensus.metrics(cellmeta, cn)
+# plot.consensus.metrics(cellmeta, cn)
+
+cn = "Leiden_r2"
+cellmeta <- calculate.consensus.metrics(cellmeta, cn)
+# plot.consensus.metrics(cellmeta, cn)
+
+cn = "Leiden_r3"
+cellmeta <- calculate.consensus.metrics(cellmeta, cn)
+# plot.consensus.metrics(cellmeta, cn)
+
+cn = "Leiden_r4"
+cellmeta <- calculate.consensus.metrics(cellmeta, cn)
+# plot.consensus.metrics(cellmeta, cn)
+```
+
+
+## 3. Annotate clusters
+
+```{r}
+tab.annot <- cellmeta %>% 
+  select(starts_with("Leiden_")) %>% 
+  distinct()
+
+write_tsv(tab.annot, "../results/08.iterative_clustering/mTCA_leiden_hierarchical_clusters.tsv")
+```
+
+Annotate clutsters and save into `../results/08.iterative_clustering/hTCA_leiden_hierarchical_clusters.annotation.tsv`.
+
+```{r}
+leiden.clu.anno <- read_tsv("../results/08.iterative_clustering/mTCA_leiden_hierarchical_clusters.annotation.tsv",
+                            col_types = list("c","c","c","c","c","c","c","c"))
+
+l4anno1 <- leiden.clu.anno$Cell_type_level1
+names(l4anno1) <- leiden.clu.anno$Leiden_r4
+
+l4anno2 <- leiden.clu.anno$Cell_type_level2
+names(l4anno2) <- leiden.clu.anno$Leiden_r4
+
+l4anno3 <- leiden.clu.anno$Cell_type_level3
+names(l4anno3) <- leiden.clu.anno$Leiden_r4
+
+l4anno4 <- leiden.clu.anno$Cell_type_level4
+names(l4anno4) <- leiden.clu.anno$Leiden_r4
+
+cellmeta$Leiden_r1 %<>% as.character()
+cellmeta$Leiden_r2 %<>% as.character()
+cellmeta$Leiden_r3 %<>% as.character()
+cellmeta$Leiden_r4 %<>% as.character()
+```
+
+```{r}
+cellmeta$Cell_type_level1 <- l4anno1[cellmeta$Leiden_r4]
+cellmeta$Cell_type_level2 <- l4anno2[cellmeta$Leiden_r4]
+cellmeta$Cell_type_level3 <- l4anno3[cellmeta$Leiden_r4]
+cellmeta$Cell_type_level4 <- l4anno4[cellmeta$Leiden_r4]
+```
+
+```{r, fig.width=10, fig.height=8}
+set.seed(1024)
+
+ggplot(cellmeta, aes(UMAP_1, UMAP_2, color=factor(Leiden_r4, levels = sample(unique(Leiden_r4))))) + 
+  geom_point(size = .2, alpha=1, show.legend = F) + 
+  geom_text(inherit.aes = F, data = get_label_pos(cellmeta, emb = "UMAP", group.by="Leiden_r4"), 
+            aes(x,y,label=label), size=3) + 
+  theme_void()
+
+ggplot(cellmeta, aes(UMAP_1, UMAP_2, color=factor(Cell_type_corrected, levels = sample(unique(Cell_type_corrected))))) + 
+  geom_point(size = .2, alpha=1, show.legend = F) + 
+  geom_text(inherit.aes = F, data = get_label_pos(cellmeta, emb = "UMAP", group.by="Cell_type_corrected"), 
+            aes(x,y,label=label), size=3) + 
+  theme_void()
+
+ggplot(cellmeta, aes(UMAP_1, UMAP_2, color=factor(Cell_type_level2, levels = sample(unique(Cell_type_level2))))) + 
+  geom_point(size = .2, alpha=1, show.legend = F) + 
+  geom_text(inherit.aes = F, data = get_label_pos(cellmeta, emb = "UMAP", group.by="Cell_type_level2"), 
+            aes(x,y,label=label), size=3) + 
+  theme_void()
+
+ggplot(cellmeta, aes(UMAP_1, UMAP_2, color=factor(Cell_type_level3, levels = sample(unique(Cell_type_level3))))) + 
+  geom_point(size = .2, alpha=1, show.legend = F) + 
+  geom_text(inherit.aes = F, data = get_label_pos(cellmeta, emb = "UMAP", group.by="Cell_type_level3"), 
+            aes(x,y,label=label), size=3) + 
+  theme_void()
+```
+
+```{r}
+cells.use <- rownames(subset(cellmeta, Leiden_r4 %in% c("10,0,2","10,1,0","5,2,0","5,2,1") | 
+                               Cell_type_corrected %in% c("Somatic progenitor cells") ))
+cellmeta$Cell_type_final <- ifelse(rownames(cellmeta) %in% cells.use, 
+                                   cellmeta$Cell_type_corrected %>% as.character(), 
+                                   cellmeta$Cell_type_level3)
+```
+
+
+```{r}
+## rename mix clusters
+cellmeta$Cell_type_corrected %<>% as.character()
+cells.select <- grepl(pattern = "^mixed", cellmeta$Cell_type_level3)
+table(cellmeta$Cell_type_level3[cells.select])
+sort(table(cellmeta$Cell_type_corrected[cells.select]))
+cellmeta$Cell_type_final <- ifelse(cells.select, cellmeta$Cell_type_corrected, cellmeta$Cell_type_level3)
+
+## remove highly mixed
+cells.select <- grepl(pattern = "highly mixed", cellmeta$Cell_type_level3)
+bad.cells <- rownames(cellmeta)[cells.select]
+kept.cells <- setdiff(rownames(cellmeta), bad.cells)
+cellmeta <- cellmeta[kept.cells, ]
+```
+
+```{r, fig.width=10, fig.height=8}
+ggplot(cellmeta, aes(UMAP_1, UMAP_2, color=factor(Cell_type_final, levels = sample(unique(Cell_type_final))))) + 
+  geom_point(size = .2, alpha=1, show.legend = F) + 
+  geom_text(inherit.aes = F, data = get_label_pos(cellmeta, emb = "UMAP", group.by="Cell_type_final"), 
+            aes(x,y,label=label), size=3) + 
+  theme_void()
+
+ggplot(cellmeta, aes(UMAP_1, UMAP_2, color=factor(Platform, levels = unique(Platform)))) + 
+  geom_point(size = .2, alpha=1, show.legend = F) + 
+  geom_text(inherit.aes = F, data = get_label_pos(cellmeta, emb = "UMAP", group.by="Platform"), 
+            aes(x,y,label=label), size=3) + 
+  theme_void()
+
+ggplot(cellmeta, aes(UMAP_1, UMAP_2, color=factor(Leiden_r4, levels = unique(Leiden_r4)))) + 
+  geom_point(size = .2, alpha=1, show.legend = F) + 
+  geom_text(inherit.aes = F, data = get_label_pos(cellmeta, emb = "UMAP", group.by="Leiden_r4"), 
+            aes(x,y,label=label), size=3) + 
+  theme_void()
+```
+
+```{r}
+# seu <- sceasy::convertFormat("../results/07.label_transfer.mouse/mTCA.core.h5ad", from = "anndata", to = "seurat")
+seu <- readRDS("../results/07.label_transfer.mouse/mTCA.core.seurat.rds")
+seu <- subset(seu, cells = kept.cells)
+seu@meta.data <- cellmeta[rownames(seu@meta.data), ]
+seu[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(seu@meta.data[, c("UMAP_1", "UMAP_2")]), assay = "RNA")
+
+## save data
+saveRDS(seu@meta.data, "../results/08.iterative_clustering/mTCA.core.cellmeta.rds")
+write.table(seu@meta.data, "../results/08.iterative_clustering/mTCA.core.cellmeta.tsv", sep = "\t", quote = F)
+
+sceasy::convertFormat(seu, from = "seurat", to = "anndata", outFile = "../results/08.iterative_clustering/mTCA.core.h5ad")
+saveRDS(seu, "../results/08.iterative_clustering/mTCA.core.seurat.rds")
+```
+
+```{r, fig.width=10, fig.height=8}
+# cellmeta <- readRDS("../results/08.iterative_clustering/mTCA.core.cellmeta.rds")
+# 
+# tmp.1 <- subset(cellmeta, Cell_type_final %in% c("Hindgut & Visceral Endoderm", "Mesoderm", "Epiblast", 
+#                                                  "Primitive Streak", "Mesenchyme", "Specification PGCs"))
+# 
+# ggplot(tmp.1, aes(UMAP_1, UMAP_2, color=factor(Age, levels = sample(unique(Age))))) +
+#   geom_point(size = .2, alpha=1, show.legend = T) +
+#   ggrepel::geom_text_repel(inherit.aes = F, data = get_label_pos(tmp.1, emb = "UMAP", group.by="Age"),
+#             aes(x,y,label=label), size=3) +
+#   guides(color = guide_legend(title = "", override.aes = list(size=3))) +
+#   theme_void()
+# 
+# ggplot(tmp.1, aes(UMAP_1, UMAP_2, color=factor(Cell_type_final, levels = sample(unique(Cell_type_final))))) +
+#   geom_point(size = .2, alpha=1, show.legend = T) +
+#   ggrepel::geom_text_repel(inherit.aes = F, data = get_label_pos(tmp.1, emb = "UMAP", group.by="Cell_type_final"),
+#             aes(x,y,label=label), size=3) +
+#   guides(color = guide_legend(title = "", override.aes = list(size=3))) +
+#   theme_void()
+```
+
+
+```{r, fig.width=10, fig.height=8}
+# cellmeta <- readRDS("../results/08.iterative_clustering/mTCA.core.cellmeta.rds")
+# 
+# tmp.1 <- subset(cellmeta, Cell_type_level3 == "highly mixed")
+# tmp.2 <- subset(cellmeta, Cell_type_level3 != "highly mixed") |> sample_frac(size = 0.1)
+# tmp.2 <- tmp.2 |> select(UMAP_1, UMAP_2)
+# 
+# tmp.1 <- subset(tmp.1, Cell_type_corrected %in% names(table(tmp.1$Cell_type_corrected))[table(tmp.1$Cell_type_corrected)>50])
+# 
+# ggplot(tmp.1, aes(UMAP_1, UMAP_2, color=factor(Age, levels = sample(unique(Age))))) +
+#   geom_point(size = .2, alpha=1, show.legend = T) +
+#   geom_point(inherit.aes = F, data = tmp.2, aes(UMAP_1, UMAP_2), size=.1, color="grey") +
+#   ggrepel::geom_text_repel(inherit.aes = F, data = get_label_pos(tmp.1, emb = "UMAP", group.by="Age"),
+#             aes(x,y,label=label), size=3) +
+#   guides(color = guide_legend(title = "", override.aes = list(size=3))) +
+#   theme_void() +
+#   facet_wrap(~Age)
+```
+
+```{r, fig.width=10, fig.height=8}
+# tmp.1 <- subset(cellmeta, Cell_type_level2 %in% c("Prospermatogonia", "Spermatogonia"))
+# tmp.1$Cell_type_corrected %<>% as.character()
+# tmp.1 <- subset(tmp.1, Cell_type_corrected %in% names(table(tmp.1$Cell_type_corrected))[table(tmp.1$Cell_type_corrected)>50])
+# table(tmp.1$Age, tmp.1$Cell_type_corrected)
+# table(tmp.1$Age)
+# table(tmp.1$Cell_type_corrected)
+# 
+# ggplot(tmp.1, aes(UMAP_1, UMAP_2, color=factor(Cell_type_corrected, levels = sample(unique(Cell_type_corrected))))) +
+#   geom_point(inherit.aes = F, data = tmp.2, aes(UMAP_1, UMAP_2), size=.1, color="grey", alpha=.2) +
+#   geom_point(size = .2, alpha=.2, show.legend = T) +
+#   guides(color = guide_legend(title = "", override.aes = list(size=3))) +
+#   theme_void() +
+#   facet_wrap(~Age)
+```
+
