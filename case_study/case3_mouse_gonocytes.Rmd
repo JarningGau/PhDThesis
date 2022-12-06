@@ -1,0 +1,557 @@
+---
+title: "Analysis of gonocyte-spermatogonia transition"
+author: "Jarning"
+date: "2022/5/2"
+output: html_document
+---
+
+```{r setup}
+library(tidyverse)
+library(Seurat)
+library(ProjectSVR)
+
+theme_dimplot <- function() {
+  theme_bw(base_size = 15) %+replace%
+    theme(legend.title = element_blank(),
+          panel.grid = element_blank(),
+          strip.background = element_blank(),
+          strip.text = element_text(face = "bold"),
+          axis.title = element_blank(),
+          axis.line = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank())
+}
+
+OUTPATH <- "case3_data"
+dir.create(OUTPATH)
+```
+
+## 1. Load reference atlas
+
+```{r}
+counts <- readRDS("mTCA_data/mTCA.counts.rds")
+cellmeta <- readRDS("mTCA_data/mTCA_cellmeta.rds")
+emb.mat <- as.matrix(cellmeta[, paste0("UMAP_",1:2)])
+
+features <- read.csv("mTCA_data/features.txt", row.names = 1)
+coding.genes <- subset(features, biotype == "protein_coding" & is_select == "True")
+counts <- counts[coding.genes$name, ]
+```
+
+## 2. Feature construction via AUCell
+
+```{r}
+top.genes <- read.table(file.path("case2_data", "K70/top100_genes.k_70.dt_0_2.txt"), header = T)
+auc.mat <- ComputeModuleScore(counts, gene.sets = top.genes, min.size = 20, cores = 10)
+auc.mat <- as.data.frame(t(auc.mat))
+saveRDS(auc.mat, file.path(OUTPATH, "mTCA.AUCell.rds"))
+```
+
+
+## 3. Cell projection
+
+### 3.1 Ref models
+
+Regression models
+
+```{r}
+auc.mat <- readRDS(file.path(OUTPATH, "mTCA.AUCell.rds"))
+umap.model <- FitEnsembleSVM(feature.mat = auc.mat, emb.mat = emb.mat, do.norm = "L2", cores = 20)
+dir.create(file.path(OUTPATH, "model"))
+saveRDS(umap.model, file.path(OUTPATH, "model/mTCA.umap.model.L2.rds"))
+saveRDS(top.genes, file.path(OUTPATH, "model/mTCA.features.rds"))
+```
+
+cell type models
+
+```{r}
+auc.mat <- readRDS(file.path(OUTPATH, "mTCA.AUCell.rds"))
+celltype.df <- cellmeta[, "Cell_type_final", drop=F]
+celltype.model <- FitEnsemblMultiClassif(feature.mat = auc.mat, cell.types = celltype.df, 
+                                         do.norm = "L2", cores = 20)
+saveRDS(celltype.model, file.path(OUTPATH, "model/mTCA.celltype.model.L2.rds"))
+```
+
+
+### 3.2 Projection
+
+```{r, fig.width=6, fig.height=5}
+## ref models
+top.genes <- readRDS(file.path(OUTPATH, "model/mTCA.features.rds"))
+umap.model <- readRDS(file.path(OUTPATH, "model/mTCA.umap.model.L2.rds"))
+celltype.model <- readRDS(file.path(OUTPATH, "model/mTCA.celltype.model.L2.rds"))
+
+## inputs
+seu <- readRDS("example_dataset/query.neonatal_testis.rds")
+seu <- UpdateSeuratObject(seu)
+
+## projection
+seu <- ComputeModuleScore(seu, gene.sets = top.genes, cores = 20)
+DefaultAssay(seu) <- "AUCell"
+
+newdata <- FetchData(seu, vars = rownames(seu))
+colnames(newdata) = sub("-", "_", colnames(newdata))
+
+umap.proj <- ProjectNewdata(feature.mat = newdata, model = umap.model, do.norm = "L2", cores = 20)
+celltype.pred <- PredictNewdata(feature.mat = newdata, model = celltype.model, do.norm = "L2", cores = 20)
+
+DefaultAssay(seu) <- "RNA"
+seu[["umap_pred"]] = CreateDimReducObject(embeddings = as.matrix(umap.proj@embeddings), assay = "RNA")
+seu$celltype.svm <- celltype.pred$Cell_type_final
+seu$celltype.svm.major_votes <- major.votes$Cell_type_final.major_votes
+
+DimPlot(seu, reduction = "umap_pred", group.by = "cell_type", label = F, pt.size = 1) +
+  ggsci::scale_color_d3("category20")
+
+DimPlot(seu, reduction = "umap_pred", group.by = "Dpp", label = F, pt.size = 1) +
+  scale_color_viridis_d()
+
+DimPlot(seu, reduction = "umap_pred", group.by = "celltype.svm", label = F, pt.size = 1) +
+  ggsci::scale_color_d3("category20")
+```
+
+```{r, fig.width=8, fig.height=6}
+FeaturePlot(seu, reduction = "umap_pred", features = c("Dnmt3l", "Gfra1", "Neurog3", "Nanos3"), ncol = 2)
+FeaturePlot(seu, reduction = "umap_pred", features = c("Stra8", "Gm4969", "Dmc1", "Rad51ap2"), ncol = 2)
+```
+
+### 3.3 Map quality
+```{r, fig.width=10, fig.height=8}
+umap.proj <- AddProjQual(umap.proj, k = 20)
+
+seu$mapQ <- umap.proj@cellmeta$mean.knn.dist
+seu$mapQ.padj <- umap.proj@cellmeta$p.adj
+
+p1 <- DimPlot(seu, reduction = "umap_pred", group.by = "cell_type") + ggsci::scale_color_d3("category20")
+p2 <- FeaturePlot(seu, features = "mapQ", reduction = "umap_pred")
+p3 <- FeaturePlot(seu, features = "mapQ.padj", reduction = "umap_pred", pt.size = 1)
+p4 <- DimPlot(seu, reduction = "umap_pred", cells.highlight = rownames(subset(seu@meta.data, mapQ.padj>0.05))) + 
+  scale_color_manual(labels = c("No", "Yes"), values = c("grey","red")) + 
+  guides(color = guide_legend(title = "p.adj > 0.05"))
+
+p1 + p2 + p3 + p4
+ggsave(file.path(OUTPATH, "plots/projection.map_quanlity.png"), width = 10, height = 8, units = "in", dpi = 300)
+```
+
+```{r}
+celltype.cells <- table(seu$celltype.svm)
+celltype.show <- names(celltype.cells)[celltype.cells > 5]
+
+seu.clean <- subset(seu, celltype.svm %in% celltype.show)
+
+germ.levels <- c("Mitotic arrest PGCs", "Quiescent prospermatogonia", "Transitional prospermatogonia", "undiff A spermatogonia", "type A spermatogonia", "type B spermatogonia", "pre Leptotene", "Leptotene")
+soma.levels <- c("Sertoli cells", "Stromal cells", "Leydig cells", "Myoid cells", "Macrophages", "Endothelial cells")
+seu.clean$celltype.major <- ifelse(seu.clean$celltype.svm %in% germ.levels, "Germ cells", "Somatic cells")
+seu.clean$celltype.svm <- factor(seu.clean$celltype.svm, levels = c(germ.levels, soma.levels))
+
+DimPlot(seu.clean, group.by = "celltype.major", reduction = "umap_pred", label = F, pt.size = 1) + ggsci::scale_color_d3("category20")
+ggsave(file.path(OUTPATH, "plots/dimplot.celltype.major.png"), width = 7, height = 5, units = "in", dpi = 600)
+
+DimPlot(seu.clean, group.by = "celltype.svm", reduction = "umap_pred", label = F, pt.size = 1) + ggsci::scale_color_d3("category20")
+ggsave(file.path(OUTPATH, "plots/dimplot.celltype.svm.png"), width = 7, height = 5, units = "in", dpi = 600)
+
+Idents(seu.clean) <- seu.clean$celltype.svm
+seu.germ <- subset(seu.clean, celltype.major == "Germ cells")
+
+DimPlot(seu.germ, pt.size = 1, label = F) + ggsci::scale_color_d3("category20")
+ggsave(file.path(OUTPATH, "plots/dimplot.celltype.germ_cells.png"), width = 7, height = 5, units = "in", dpi = 600)
+```
+
+```{r}
+saveRDS(seu, file.path(OUTPATH, "output.neonatal_testis.rds"))
+saveRDS(seu.clean, file.path(OUTPATH, "output.neonatal_testis.clean.rds"))
+saveRDS(seu.germ, file.path(OUTPATH, "output.neonatal_testis.germ_cells.rds"))
+```
+
+## 4. Visulization
+
+```{r, fig.width=8, fig.height=5}
+ref.plot <- sample_n(cellmeta, size = 50000)[, paste0("UMAP_", 1:2)]
+query.plot <- FetchData(seu.clean, vars = c(paste0("UMAP_", 1:2), "celltype.svm", "Dpp") )
+
+ggplot() + 
+  geom_point(data = ref.plot, aes(UMAP_1, UMAP_2), size = .1, alpha=.1, color="grey", show.legend = F) +
+  geom_point(data = query.plot, aes(UMAP_1, UMAP_2, color=celltype.svm), size = .3) + 
+  ggsci::scale_color_d3("category20") +
+  guides(color = guide_legend(override.aes = list(size=5))) +
+  theme_dimplot()
+
+ggsave(file.path(OUTPATH, "plots/projection.umap.plot.png"), width = 8, height = 5, units = "in", dpi = 600)
+```
+
+```{r, fig.width=7, fig.height=4}
+data.plot <- FetchData(seu.germ, vars = c("celltype.svm", "Dpp", paste0("UMAP_", 1:2)))
+
+data.plot <- data.plot %>% 
+  group_by(Dpp, celltype.svm) %>% 
+  summarise(cells = n()) %>% ungroup() %>% 
+  group_by(Dpp) %>% 
+  mutate(perc = cells / sum(cells))
+
+data.plot %>% 
+  ggplot(aes(Dpp, perc, fill=celltype.svm)) + 
+  geom_col() + 
+  scale_y_continuous(labels = scales::percent) + 
+  labs(y = "Cell population") + 
+  ggsci::scale_fill_d3("category10") + 
+  theme_bw(base_size = 15) +
+  theme(legend.title = element_blank(),
+        panel.grid = element_blank(),
+        axis.text = element_text(size = 15, color = "black"))
+
+ggsave(file.path(OUTPATH, "plots/cell_population.by_Dpp.png"), width = 7, height = 4, units = "in", dpi = 600)
+```
+
+## 5. Benchmark DR
+
+```{r}
+seu <- readRDS(file.path(OUTPATH, "output.neonatal_testis.germ_cells.rds"))
+plot(seu[["pca"]]@stdev)
+
+seu <- RunUMAP(seu, reduction = "pca", dims = 1:10)
+umap.pca <- seu[["umap"]]@cell.embeddings
+colnames(umap.pca) <- paste0("umap_", 1:2)
+
+seu <- harmony::RunHarmony(seu, reduction = "pca", dims = 1:10, group.by.vars = "Library")
+seu <- RunUMAP(seu, reduction = "harmony", dims = 1:10)
+umap.harmony <- seu[["umap"]]@cell.embeddings
+colnames(umap.harmony) <- paste0("umap_", 1:2)
+
+umap.proj <- seu[["umap_pred"]]@cell.embeddings
+colnames(umap.proj) <- paste0("umap_", 1:2)
+
+saveRDS(umap.pca, file.path(OUTPATH, "benchmarkDR.umap_pca.rds"))
+saveRDS(umap.harmony, file.path(OUTPATH, "benchmarkDR.umap_harmony.rds"))
+saveRDS(umap.proj, file.path(OUTPATH, "benchmarkDR.umap_projectSVR.rds"))
+```
+
+```{r, fig.width=13, fig.height=4}
+umap.pca <- as.data.frame(umap.pca)
+umap.pca$LibraryID <- seu$Library
+
+p1 <- ggplot(umap.pca, aes(umap_1, umap_2)) + 
+  geom_point(aes(color = LibraryID), size = .5) + 
+  theme_dimplot() + 
+  ggtitle("No batch correction") + 
+  theme(plot.title = element_text(hjust = .5, size = 14, face = "bold")) + 
+  NoLegend()
+
+umap.harmony <- as.data.frame(umap.harmony)
+umap.harmony$LibraryID <- seu$Library
+
+p2 <- ggplot(umap.harmony, aes(umap_1, umap_2)) + 
+  geom_point(aes(color = LibraryID), size = .5) + 
+  theme_dimplot() + 
+  ggtitle("Harmony") + 
+  theme(plot.title = element_text(hjust = .5, size = 14, face = "bold")) + 
+  NoLegend()
+
+umap.proj <- as.data.frame(umap.proj)
+umap.proj$LibraryID <- seu$Library
+
+p3 <- ggplot(umap.proj, aes(umap_1, umap_2)) + 
+  geom_point(aes(color = LibraryID), size = .5) + 
+  theme_dimplot() + 
+  ggtitle("ProjectSVR") + 
+  guides(color = guide_legend(override.aes = list(size = 3), ncol = 3)) + 
+  theme(plot.title = element_text(hjust = .5, size = 14, face = "bold")) 
+
+p1 + p2 + p3
+
+ggsave(file.path(OUTPATH, "plots/benchmark_DR.umap.png"), width = 13, height = 4, units = "in", dpi = 600)
+```
+
+```{r, fig.width=5, fig.height=4}
+library(lisi)
+
+lisi.res <- data.frame(
+  "No batch correction" = compute_lisi(X = as.matrix(umap.pca[,1:2]), meta_data = umap.pca, label_colnames = "LibraryID") %>% unlist(),
+  Harmony = compute_lisi(X = as.matrix(umap.harmony[,1:2]), meta_data = umap.harmony, label_colnames = "LibraryID") %>% unlist(),
+  ProjectSVR = compute_lisi(X = as.matrix(umap.proj[,1:2]), meta_data = umap.proj, label_colnames = "LibraryID") %>% unlist()
+)
+
+lisi.res %>% 
+  pivot_longer(1:3, names_to = "algorithm", values_to = "LISI") %>% 
+  mutate(algorithm = factor(algorithm, levels = colnames(lisi.res)) ) %>% 
+  ggplot(aes(algorithm, LISI)) + 
+  geom_boxplot(aes(color = algorithm), show.legend = F) + 
+  ylab("LISI of library ID") + 
+  ggsignif::geom_signif(comparisons = list(c("No.batch.correction","Harmony"), c("Harmony","ProjectSVR")), step_increase = .1) + 
+  scale_x_discrete(labels = c("No batch\ncorrection", "Harmony", "ProjectSVR")) + 
+  theme_classic(base_size = 15) + 
+  theme(axis.title.x = element_blank(),
+        axis.text = element_text(size = 15, color = "black"))
+
+ggsave(file.path(OUTPATH, "plots/benchmark_DR.LISI.png"), width = 5, height = 4, units = "in", dpi = 600)
+```
+
+
+## 6. Gene module
+
+### 6.1 Seurat to h5ad
+
+```{r}
+OUTPATH <- "case3_data/"
+seu <- readRDS(file.path(OUTPATH, "output.neonatal_testis.germ_cells.rds"))
+counts <- seu[["RNA"]]@counts
+expr.in.cells <- Matrix::rowSums(counts > 0)
+
+ribo.genes <- readLines("mTCA_data/MGI_GO_ribosomal_subunit.txt")
+spike.in <- grepl(pattern = "^ERCC-", x = rownames(counts))
+is.ribo <- rownames(counts) %in% ribo.genes
+
+genes.use <- expr.in.cells >= 10 & !spike.in & !is.ribo
+counts <- counts[genes.use, ]
+
+seu <- CreateSeuratObject(counts = counts)
+sceasy::convertFormat(seu, from = "seurat", to = "anndata", outFile = file.path(OUTPATH, "output.neonatal_testis.germ_cells.h5ad"))
+```
+
+### 6.2 cNMF
+
+```{r}
+counts.fn = file.path(OUTPATH, "output.neonatal_testis.germ_cells.h5ad")
+out.path = file.path(OUTPATH, "cnmf")
+
+FindOptimalK(counts.fn = counts.fn,
+             components = seq(5,30,1),
+             out.path = out.path,
+             run.name = "K_5_30_by1",
+             n.iter = 50,
+             n.var.genes = 2000,
+             cores = 20)
+
+K = 14
+run.name = paste0("K",K)
+RunCNMF(counts.fn = counts.fn,
+        K = K,
+        out.path = out.path,
+        run.name = run.name,
+        n.iter = 200,
+        n.var.genes = 2000,
+        cores = 20,
+        n.top.genes = 200,
+        local.density.cutoff = 0.2,
+        show.clustering = T)
+```
+
+```{r, fig.width=16, fig.height=12}
+usage <- read.table("case3_data/cnmf/K14/K14.usages.k_14.dt_0_2.consensus.txt", row.names = 1, header = T, sep = "\t", check.names = F)
+colnames(usage) <- paste0("Usage_", colnames(usage))
+usage <- apply(usage, 1, function(xx) xx/sum(xx)) %>% t()
+colnames(usage) <- sub("Usage_", "Program ", colnames(usage))
+
+emb <- FetchData(seu, vars = c("UMAP_1", "UMAP_2"))
+
+data.plot <- cbind(emb, usage[rownames(emb), ])
+data.plot <- data.plot %>% 
+  pivot_longer(cols = 3:ncol(.), names_to = "component", values_to = "score")
+
+data.plot %>% 
+  group_split(component) %>% 
+  map(
+    ~ggplot(., aes(UMAP_1, UMAP_2, color = score)) + 
+      geom_point(size = .5) +
+      scale_color_viridis_c() +
+      facet_grid(~ component, labeller = function(x) label_value(x, multi_line = FALSE)) + 
+      theme_bw(base_size = 15)
+  ) %>% 
+  cowplot::plot_grid(plotlist = ., align = 'hv', ncol = 4)
+
+ggsave(file.path(OUTPATH, "plots/cnmf.usage.plots.png"), width = 16, height = 12, dpi = 300)
+```
+
+### 6.3 Plots
+
+```{r, fig.width=21, fig.height=3}
+program.use <- paste0("Program ", c(9,6,4,7,5,13))
+
+data.plot %>% 
+  subset(component %in% program.use) %>% 
+  mutate(component = factor(component, levels = program.use)) %>% 
+  group_split(component) %>% 
+  map(
+    ~ggplot(., aes(UMAP_1, UMAP_2, color = score)) + 
+      geom_point(size = .5) +
+      scale_color_gradientn(colors = c("#002DD8", "#04C5FE", "#61FD9C", "#E7FB20", "#FE7700", "#CA0405")) + 
+      facet_grid(~ component, labeller = function(x) label_value(x, multi_line = FALSE)) + 
+      theme_bw(base_size = 15) + 
+      coord_equal(ratio = .9) + 
+      theme(panel.grid = element_blank(),
+            axis.ticks = element_blank(),
+            axis.title = element_blank(),
+            axis.text = element_blank(),
+            legend.title = element_blank(), 
+            strip.background = element_blank(),
+            strip.text = element_text(face = "bold", vjust = 1, size = 18))
+  ) %>% 
+  cowplot::plot_grid(plotlist = ., align = 'hv', nrow = 1)
+
+ggsave(file.path(OUTPATH, "plots/cnmf.usage.plots.selected.png"), width = 21, height = 3, dpi = 600)
+```
+
+```{r, fig.width=21, fig.height=3}
+genes.use <- c("Dnmt3l", "Ldha", "Id4", "Neurog3", "Dmrtb1", "Prdm9")
+
+data.plot.2 <- FetchData(seu, vars = c("UMAP_1", "UMAP_2", genes.use))
+
+data.plot.2 <- data.plot.2 %>% 
+  pivot_longer(cols = 3:ncol(.), names_to = "gene", values_to = "Expr")
+
+data.plot.2 %>% 
+  mutate(gene = factor(gene, levels = genes.use)) %>% 
+  group_split(gene) %>% 
+  map(
+    ~ggplot(., aes(UMAP_1, UMAP_2, color = ifelse(Expr < quantile(Expr, .99), Expr, quantile(Expr, .99)))) + 
+      geom_point(size = .5) +
+      scale_color_gradientn(colors = c("#002DD8", "#04C5FE", "#61FD9C", "#E7FB20", "#FE7700", "#CA0405")) + 
+      facet_grid(~ gene, labeller = function(x) label_value(x, multi_line = FALSE)) + 
+      coord_equal(ratio = .9) + 
+      theme_bw(base_size = 15) + 
+      theme(panel.grid = element_blank(),
+            axis.ticks = element_blank(),
+            axis.title = element_blank(),
+            axis.text = element_blank(),
+            legend.title = element_blank(), 
+            strip.background = element_blank(),
+            strip.text = element_text(face = "bold", vjust = 1, size = 18))
+  ) %>% 
+  cowplot::plot_grid(plotlist = ., align = 'hv', nrow = 1)
+
+ggsave(file.path(OUTPATH, "plots/cnmf.genes.plots.selected.png"), width = 21, height = 3, dpi = 600)
+```
+
+### 6.4 Change by days/celltype
+
+```{r, fig.width=12, fig.height=6}
+data.plot <-FetchData(seu, vars = c("Dpp", "celltype.svm"))
+data.plot <- cbind(usage[rownames(data.plot), program.use], data.plot)
+
+data.plot <- data.plot %>% 
+  pivot_longer(cols = 1:length(program.use), names_to = "component", values_to = "score")
+
+data.plot %>% 
+  mutate(component = factor(component, levels = program.use)) %>% 
+  group_split(component) %>% 
+  map(
+    ~ggplot(., aes(Dpp, fill = score > .2)) + 
+      geom_bar(position = "fill") +
+      scale_fill_manual(values = c("grey", "red")) + 
+      scale_y_continuous(labels = scales::percent) + 
+      ylab("% of cells") + 
+      facet_grid(~ component, labeller = function(x) label_value(x, multi_line = FALSE)) + 
+      theme_bw(base_size = 15) + 
+      theme(panel.grid = element_blank(),
+            legend.position = "none",
+            strip.background = element_blank(),
+            strip.text = element_text(face = "bold", vjust = 1, size = 18))
+  ) %>% 
+  cowplot::plot_grid(plotlist = ., align = 'hv', nrow = 2)
+
+ggsave(file.path(OUTPATH, "plots/cnmf.activated_cells_by_days.png"), width = 12, height = 6, dpi = 600)
+```
+
+```{r, fig.width=7, fig.height=4}
+data.stat <- data.plot %>% 
+  mutate(component = factor(component, levels = program.use),
+         celltype.svm = factor(celltype.svm, levels = rev(levels(celltype.svm))),
+         activated.cells = score > 0.2) %>% 
+  group_by(celltype.svm, component) %>% 
+  summarise(ncells = n(),
+            activated.cells = sum(activated.cells)) %>% 
+  mutate(perc.activated.cells = activated.cells / ncells)
+
+ggplot(data.stat, aes(component, celltype.svm, fill = activated.cells, size = perc.activated.cells)) + 
+  geom_point(color = "black", shape=21) + 
+  xlab("Programs") + ylab("") + 
+  scale_fill_gradientn(colors = c("white","red")) + 
+  scale_x_discrete(labels = function(x) sub("Program ", "P", x)) + 
+  guides(size = guide_legend(title = "% of cells"),
+         fill = guide_legend(title = "Number of cells")) + 
+  theme_bw(base_size = 15) + 
+  theme(axis.text = element_text(color = "black"))
+
+ggsave(file.path(OUTPATH, "plots/cnmf.activated_cells_by_celltype.png"), width = 7, height = 4, dpi = 600)
+```
+
+
+### 6.5 GO function
+
+```{r, fig.width=7, fig.height=5}
+t2g <- readRDS("example_dataset/MGI_GO_BP.term2gene.rds")
+t2n <- readRDS("example_dataset/MGI_GO_BP.term2name.rds")
+
+top100.genes <- read.table("case3_data/cnmf/K14/top200_genes.k_14.dt_0_2.txt", header = T, sep = "\t", check.names = F) %>% head(100)
+program.use <- paste0("program_", c(9,6,4,7,5,13))
+top100.genes <- top100.genes[, program.use]
+
+ego.list <- lapply(top100.genes, function(genes) {
+  clusterProfiler::enricher(gene = genes, TERM2GENE = t2g, TERM2NAME = t2n, pvalueCutoff = 1, minGSSize = 0)
+})
+names(ego.list) <- program.use
+
+data.use <- lapply(names(ego.list), function(xx) {
+  res <- head(ego.list[[xx]]@result, 5)
+  res$group <- xx
+  res
+}) %>% Reduce(rbind, .)
+
+term.levels <- unique(data.use$Description)
+
+data.use <- lapply(names(ego.list), function(xx) {
+  res <- subset(ego.list[[xx]]@result, Description %in% term.levels)
+  res$group <- xx
+  res
+}) %>% Reduce(rbind, .)
+
+data.use$Description <- factor(data.use$Description, levels = rev(term.levels))
+data.use <- subset(data.use, p.adjust < 0.05 & Count > 3)
+data.use$group <- factor(data.use$group, levels = program.use)
+ggplot(data.use, aes(group, Description)) + 
+  geom_point(aes(size = Count, fill = -log10(p.adjust)), shape=21, color = "black") + 
+  scale_fill_gradientn(colors = c("white","red")) + 
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 50)) + 
+  scale_x_discrete(labels = function(x) sub("program_", "P", x)) + 
+  labs(x = "Gene programs") + 
+  theme_bw(base_size = 13) + 
+  theme(axis.title.y = element_blank(),
+        axis.text = element_text(color = "black"))
+
+saveRDS(ego.list, file.path(OUTPATH, "cnmf_top_genes.ego.list.rds"))
+ggsave(file.path(OUTPATH, "plots/cnmf_top_genes.enriched_GO.png"), width = 7, height = 5, units = "in", dpi = 600)
+```
+
+## 7. scVelo
+
+Prepare inputs for scVelo.
+
+```{r}
+library(SeuratWrappers)
+library(SeuratDisk)
+
+velo.counts <- readRDS("example_dataset/query.neonatal_testis.velocyto.rds")
+seu <- readRDS("case3_data/output.neonatal_testis.germ_cells.rds")
+
+cells.use <- colnames(seu)
+setdiff(cells.use, colnames(velo.counts$spliced)) %>% length()
+velo.counts <- lapply(velo.counts, function(x) x[, cells.use])
+sapply(velo.counts, dim)
+
+seu.velo <- as.Seurat(x = velo.counts)
+seu.velo[["RNA"]] <- seu.velo[["spliced"]]
+DefaultAssay(seu.velo) <- "RNA"
+seu.velo@meta.data <- seu@meta.data
+
+seu.velo[["umap_pca"]] <- CreateDimReducObject(embeddings = readRDS("case3_data/benchmarkDR.umap_pca.rds"))
+seu.velo[["umap_harmony"]] <- CreateDimReducObject(embeddings = readRDS("case3_data/benchmarkDR.umap_harmony.rds"))
+seu.velo[["umap_proj"]] <- CreateDimReducObject(embeddings = readRDS("case3_data/benchmarkDR.umap_projectSVR.rds"))
+
+DimPlot(seu.velo, reduction = "umap_pca", group.by = "celltype.svm")
+DimPlot(seu.velo, reduction = "umap_harmony", group.by = "celltype.svm")
+DimPlot(seu.velo, reduction = "umap_proj", group.by = "celltype.svm")
+
+SaveH5Seurat(seu.velo, filename = file.path(OUTPATH, "velocyto.neonatal_testis.germ_cells.h5Seurat"))
+Convert(file.path(OUTPATH, "velocyto.neonatal_testis.germ_cells.h5Seurat"), dest = "h5ad")
+```
+
+

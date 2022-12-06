@@ -24,24 +24,24 @@ safe_mkdir(OUTDIR)
 
 ```{r}
 samples <- list.dirs("../data/benchmark/10X_matrix/", full.names = F, recursive = F)
-kb_cr.bc <- lapply(samples, kb_cr_barcodes) |> do.call(rbind, .)
-solo_cr.bc <- lapply(samples, solo_cr_barcodes) |> do.call(rbind, .)
+kb_cr.bc <- lapply(samples, kb_cr_barcodes) %>% do.call(rbind, .)
+solo_cr.bc <- lapply(samples, solo_cr_barcodes) %>% do.call(rbind, .)
 
-solo_cr.bc |> 
+solo_cr.bc %>% 
   ggplot(aes(sample, set_size, fill=set_name)) + 
   labs(x="", y="Number of barcodes", title = "STARsolo vs Cellranger") + 
   geom_col() + 
-  geom_text(inherit.aes = F, data = . |> subset(set_name == "common"), 
+  geom_text(inherit.aes = F, data = . %>% subset(set_name == "common"), 
             aes(sample, total-max(total)*0.1, label=paste0(round(set_perc, 2), "%"))) + 
   coord_flip()
 ggsave("../results/01.benchmark/solo_vs_cr.bc.pdf", width = 7, height = 5)
 
 
-kb_cr.bc |> 
+kb_cr.bc %>% 
   ggplot(aes(sample, set_size, fill=set_name)) + 
   labs(x="", y="Number of barcodes", title = "KB vs Cellranger") + 
   geom_col() + 
-  geom_text(inherit.aes = F, data = . |> subset(set_name == "common"), 
+  geom_text(inherit.aes = F, data = . %>% subset(set_name == "common"), 
             aes(sample, total-max(total)*0.1, label=paste0(round(set_perc, 2), "%"))) + 
   coord_flip()
 ggsave("../results/01.benchmark/kb_vs_cr.bc.pdf", width = 7, height = 5)
@@ -63,10 +63,10 @@ kb_cr.umi <- pblapply(samples, function(xx) {
   kb_cr_umi(sample = xx, 
             kb_mm = kb_mm.list[[xx]], 
             cr_mm = cr_mm.list[[xx]])
-}) |> do.call(rbind, .)
+}) %>% do.call(rbind, .)
 
 # plot
-kb_cr.umi |> 
+kb_cr.umi %>% 
   ggplot(aes(kb, cr, color=sample)) + 
   labs(x = "nUMI (KB)", y = "nUMI (Cellranger)") + 
   geom_point(size = 0.5, alpha=0.1) + 
@@ -84,10 +84,10 @@ solo_cr.umi <- pblapply(samples, function(xx) {
   solo_cr_umi(sample = xx, 
               solo_mm = solo_mm.list[[xx]], 
               cr_mm = cr_mm.list[[xx]])
-}) |> do.call(rbind, .)
+}) %>% do.call(rbind, .)
 
 # plot
-solo_cr.umi |> 
+solo_cr.umi %>% 
   ggplot(aes(solo, cr, color=sample)) + 
   labs(x = "nUMI (STARsolo)", y = "nUMI (Cellranger)") + 
   geom_point(size = 0.5, alpha=0.1) + 
@@ -107,14 +107,18 @@ ggsave("../results/01.benchmark/solo_vs_cr.nUMI.png", width = 7, height = 5)
 # KB vs Cellranger
 kb_cr.cor <- pblapply(samples, function(xx) {
   pair_column_cor(kb_mm.list[[xx]], cr_mm.list[[xx]])
-}) |> do.call(cbind, .)
-colnames(kb_cr.cor) <- samples
-kb_cr.cor <- kb_cr.cor |> 
-  as.data.frame() |> 
-  pivot_longer(cols = 1:ncol(.), names_to = "sample", values_to = "corr")
+})
+names(kb_cr.cor) <- samples
+
+kb_cr.cor <- lapply(samples, function(xx) {
+  data.frame(
+    sample = xx,
+    corr = kb_cr.cor[[xx]]
+  )
+}) %>% do.call(rbind, .)
 
 # plot
-kb_cr.cor |> 
+kb_cr.cor %>% 
   ggplot(aes(sample, corr, fill=sample)) + 
   geom_violin(scale="width") + 
   labs(x="", y="Pearson correlation coefficient") + 
@@ -126,15 +130,18 @@ kb_cr.cor |>
 # STARsolo vs Cellranger
 solo_cr.cor <- pblapply(samples, function(xx) {
   pair_column_cor(solo_mm.list[[xx]], cr_mm.list[[xx]])
-}) |> do.call(cbind, .)
+})
+names(solo_cr.cor) <- samples
 
-colnames(solo_cr.cor) <- samples
-solo_cr.cor <- solo_cr.cor |> 
-  as.data.frame() |> 
-  pivot_longer(cols = 1:ncol(.), names_to = "sample", values_to = "corr")
+solo_cr.cor <- lapply(samples, function(xx) {
+  data.frame(
+    sample = xx,
+    corr = solo_cr.cor[[xx]]
+  )
+}) %>% do.call(rbind, .)
 
 # plot
-solo_cr.cor |> 
+solo_cr.cor %>% 
   ggplot(aes(sample, corr, fill=sample)) + 
   geom_violin(scale="width") + 
   labs(x="", y="Pearson correlation coefficient") + 
@@ -144,21 +151,21 @@ solo_cr.cor |>
   )
 
 # merge plot
-kb_cr.cor <- kb_cr.cor |> 
+kb_cr.cor <- kb_cr.cor %>% 
   mutate(method = "kb")
-solo_cr.cor <- solo_cr.cor |> 
+solo_cr.cor <- solo_cr.cor %>% 
   mutate(method = "solo")
 data.plot <- rbind(kb_cr.cor, solo_cr.cor)
 
 # p.value via t.test
 sapply(samples, function(xx) {
-  data.tmp <- data.plot |> subset(sample == xx)
+  data.tmp <- data.plot %>% subset(sample == xx)
   data.tmp.a <- subset(data.tmp, method == "kb")$corr
   data.tmp.b <- subset(data.tmp, method == "solo")$corr
   t.test(data.tmp.a, data.tmp.b)$p.value
 })
 
-data.plot |>
+data.plot %>%
   ggplot(aes(x=method, corr, fill=method)) + 
   geom_violin(scale="width") + 
   labs(x="", y="Pearson correlation coefficient", 
@@ -175,5 +182,13 @@ data.plot |>
   )
 
 ggsave("../results/01.benchmark/kb_solo.pcc_to_cr.pdf", width = 7, height = 5)
+```
+
+```{r}
+kb_cr.cor.mean <- kb_cr.cor %>% group_by(sample) %>% summarise(mean.corr = mean(corr))
+solo_cr.cor.mean <- solo_cr.cor %>% group_by(sample) %>% summarise(mean.corr = mean(corr))
+
+write_tsv(kb_cr.cor.mean, "../results/01.benchmark/kb.mean_pcc_to_cr.tsv")
+write_tsv(solo_cr.cor.mean, "../results/01.benchmark/solo.mean_pcc_to_cr.tsv")
 ```
 

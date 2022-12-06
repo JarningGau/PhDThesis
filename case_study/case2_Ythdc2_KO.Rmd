@@ -1,0 +1,600 @@
+---
+title: "Analysis of Ythdc2 KO data"
+author: "Jarning"
+date: "2022/4/29"
+output: html_document
+---
+
+```{r setup}
+library(tidyverse)
+library(Seurat)
+library(ProjectSVR)
+
+theme_dimplot <- function() {
+  theme_bw(base_size = 15) %+replace%
+    theme(legend.title = element_blank(),
+          panel.grid = element_blank(),
+          strip.background = element_blank(),
+          strip.text = element_text(face = "bold"),
+          axis.title = element_blank(),
+          axis.line = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank())
+}
+
+OUTPATH <- "case2_data"
+dir.create(OUTPATH)
+```
+
+
+## 1. Extract features via cNMF
+
+```{r, eval=FALSE}
+RunCNMF(counts.fn = "mTCA_data/mTCA_metacell.counts.protein_coding.h5ad", 
+        run.name = "K70", 
+        genes.fn = "mTCA_data/HVGs.2000.protein_coding.txt", 
+        out.path = OUTPATH, 
+        K = 70, 
+        n.iter = 50, 
+        cores = 20, 
+        local.density.cutoff = 0.2,
+        n.top.genes = 100, 
+        show.clustering = TRUE)
+```
+
+
+## 2. Load reference atlas
+
+```{r}
+counts <- readRDS("mTCA_data/mTCA.counts.rds")
+cellmeta <- readRDS("mTCA_data/mTCA_cellmeta.rds")
+emb.mat <- as.matrix(cellmeta[, paste0("UMAP_",1:2)])
+
+seu <- readRDS("example_dataset/query.Ythdc2KO_vs_WT.rds")
+genes.use <- intersect(rownames(seu), rownames(counts))
+
+counts <- counts[genes.use, ]
+```
+
+
+## 3. Feature construction via AUCell
+
+```{r}
+top.genes <- read.table(file.path(OUTPATH, "K70/top100_genes.k_70.dt_0_2.txt"), header = T)
+auc.mat <- ComputeModuleScore(counts, gene.sets = top.genes, min.size = 20, cores = 10)
+auc.mat <- as.data.frame(t(auc.mat))
+saveRDS(auc.mat, file.path(OUTPATH, "mTCA.AUCell.rds"))
+```
+
+```{r, fig.width=28, fig.height=30}
+sel.cells <- sample(rownames(auc.mat), size = 1e4)
+data.plot <- cbind(auc.mat[sel.cells, ], emb.mat[sel.cells, ])
+data.plot <- data.plot %>% 
+  pivot_longer(cols = 1:ncol(auc.mat), names_to = "component", values_to = "score")
+
+data.plot %>% 
+  group_split(component) %>% 
+  map(
+    ~ggplot(., aes(UMAP_1, UMAP_2, color = score)) + 
+      geom_point(size = .5) +
+      scale_color_viridis_c() +
+      facet_grid(~ component, labeller = function(x) label_value(x, multi_line = FALSE)) + 
+      theme_bw(base_size = 15)
+  ) %>% 
+  cowplot::plot_grid(plotlist = ., align = 'hv', ncol = 7)
+ggsave(file.path(OUTPATH, "plots/AUCell_score.png"), width = 28, height = 30, units = "in", dpi = 300)
+```
+
+## 4. Cell projection
+
+### 4.1 Regression model
+
+```{r}
+auc.mat <- readRDS(file.path(OUTPATH, "mTCA.AUCell.rds"))
+umap.model <- FitEnsembleSVM(feature.mat = auc.mat, emb.mat = emb.mat, do.norm = "L2", cores = 20)
+dir.create(file.path(OUTPATH, "model"))
+saveRDS(umap.model, file.path(OUTPATH, "model/mTCA.umap.model.L2.rds"))
+saveRDS(top.genes, file.path(OUTPATH, "model/mTCA.features.rds"))
+
+cellmeta.germ <- subset(cellmeta, !is.na(Pseudotime_dm))
+pst.mat <- cellmeta.germ[, "Pseudotime_dm", drop=F]
+auc.mat.germ <- auc.mat[rownames(pst.mat), ]
+pst.model <- FitEnsembleSVM(feature.mat = auc.mat.germ, emb.mat = pst.mat, do.norm = "L2", cores = 20)
+saveRDS(pst.model, file.path(OUTPATH, "model/mTCA.pseudotime.model.L2.rds"))
+```
+
+### 4.2 Projection
+
+```{r, fig.width=9, fig.height=5}
+## ref models
+top.genes <- readRDS(file.path(OUTPATH, "model/mTCA.features.rds"))
+umap.model <- readRDS(file.path(OUTPATH, "model/mTCA.umap.model.L2.rds"))
+pst.model <- readRDS(file.path(OUTPATH, "model/mTCA.pseudotime.model.L2.rds"))
+
+## inputs
+seu <- readRDS("example_dataset/query.Ythdc2KO_vs_WT.rds")
+
+## unsupervised analysis
+seu <- seu %>%
+  FindVariableFeatures(nfeatures = 2000) %>%
+  ScaleData() %>%
+  RunPCA() %>%
+  RunUMAP(reduction = "pca", dims=1:10)
+
+## projection
+seu <- ComputeModuleScore(seu, gene.sets = top.genes, cores = 20)
+DefaultAssay(seu) <- "AUCell"
+
+newdata <- FetchData(seu, vars = rownames(seu))
+colnames(newdata) = sub("-", "_", colnames(newdata))
+
+umap.proj <- ProjectNewdata(feature.mat = newdata, model = umap.model, do.norm = "L2", cores = 20)
+pst.proj <- ProjectNewdata(feature.mat = newdata, model = pst.model, do.norm = "L2", cores = 20)
+
+DefaultAssay(seu) <- "RNA"
+seu[["umap_pred"]] = CreateDimReducObject(embeddings = as.matrix(umap.proj@embeddings), assay = "RNA")
+seu$pseudotime.pred <- pst.proj@embeddings[, 1]
+
+DimPlot(seu, reduction = "umap_pred", group.by = "leiden_r0.3_0", split.by = "genotype", label = F, pt.size = .1) +
+  ggsci::scale_color_d3("category20")
+DimPlot(seu, reduction = "umap", group.by = "leiden_r0.3_0", split.by = "genotype", label = F, pt.size = .1) +
+  ggsci::scale_color_d3("category20")
+VlnPlot(seu, features = "pseudotime.pred", group.by = "leiden_r0.3_0", pt.size = 0)
+```
+
+### 4.3 Map quality
+
+```{r, fig.width=10, fig.height=8}
+umap.proj <- AddProjQual(umap.proj, k = 20)
+
+seu$mapQ <- umap.proj@cellmeta$mean.knn.dist
+seu$mapQ.padj <- umap.proj@cellmeta$p.adj
+
+p1 <- DimPlot(seu, reduction = "umap_pred", group.by = "leiden_r0.3_0") + ggsci::scale_color_d3("category20")
+p2 <- FeaturePlot(seu, features = "mapQ", reduction = "umap_pred")
+p3 <- FeaturePlot(seu, features = "mapQ.padj", reduction = "umap_pred", pt.size = 1)
+p4 <- DimPlot(seu, reduction = "umap_pred", cells.highlight = rownames(subset(seu@meta.data, mapQ.padj>0.05))) + 
+  scale_color_manual(labels = c("No", "Yes"), values = c("grey","red")) + 
+  guides(color = guide_legend(title = "p.adj > 0.05"))
+
+p1 + p2 + p3 + p4
+ggsave(file.path(OUTPATH, "plots/projection.map_quanlity.png"), width = 10, height = 8, units = "in", dpi = 300)
+```
+
+### 4.4 Label transfer
+
+```{r, fig.width=10, fig.height=5}
+cellmeta <- readRDS("mTCA_data/mTCA_cellmeta.rds")
+ref.celltype <- cellmeta$Cell_type_final
+names(ref.celltype) <- rownames(cellmeta)
+
+umap.pred <- seu[["umap_pred"]]@cell.embeddings
+knn.celltype.pred <- KnnLabelTransfer(query.emb = umap.pred, ref.emb = emb.mat,
+                                      ref.labels = ref.celltype, k = 10)
+
+seu$celltype.pred <- knn.celltype.pred$labels
+
+spg.levels <- c("Transitional prospermatogonia", "undiff A spermatogonia", "type A spermatogonia", "type B spermatogonia")
+
+seu$celltype.pred[seu$celltype.pred %in% spg.levels] <- "Spermatogonia"
+
+DimPlot(seu, group.by = "celltype.pred", reduction = "umap_pred",
+        label = F, split.by = "genotype", pt.size = .1)
+```
+
+```{r, eval=FALSE}
+saveRDS(seu, file.path(OUTPATH, "output.Ythdc2KO_vs_WT.rds"))
+```
+
+## 5. Visulization
+
+```{r, fig.width=10, fig.height=4}
+ref.plot <- sample_n(cellmeta, size = 50000)[, paste0("UMAP_", 1:2)]
+query.plot <- FetchData(seu, vars = c(paste0("umap_pred_", 1:2), "celltype.pred", "genotype", "pseudotime.pred", "mapQ.padj") )
+query.plot$genotype <- ifelse(query.plot$genotype == "WT", "WT", "Ythdc2-KO")
+query.plot <- subset(query.plot, mapQ.padj < 0.05)
+celltype.levels <- c("Spermatogonia", "pre Leptotene", "Leptotene")
+query.plot <- subset(query.plot, celltype.pred %in% celltype.levels)
+query.plot$celltype.pred <- factor(query.plot$celltype.pred, levels = celltype.levels)
+
+ggplot() + 
+  geom_point(data = ref.plot, aes(UMAP_1, UMAP_2), size = .1, alpha=.1, color="grey", show.legend = F) +
+  geom_point(data = query.plot, aes(umap_pred_1, umap_pred_2, color=celltype.pred), size = .3) + 
+  ggsci::scale_color_d3("category20") +
+  guides(color = guide_legend(override.aes = list(size=5))) +
+  facet_wrap(~genotype, ncol = 2) + 
+  theme_dimplot()
+
+ggsave(file.path(OUTPATH, "plots/projection.umap.plot.png"), width = 10, height = 4, units = "in", dpi = 600)
+```
+
+```{r, fig.width=5, fig.height=4}
+cal_cum <- . %>% 
+  arrange(pseudotime.pred) %>% 
+  mutate(rank = order(pseudotime.pred)) %>% 
+  mutate(cum = rank/max(rank))
+
+ctrl_cum <- query.plot %>% subset(genotype == "WT") %>% cal_cum()
+test_cum <- query.plot %>% subset(genotype == "Ythdc2-KO") %>% cal_cum()
+
+segment.plot <- query.plot %>% group_by(celltype.pred) %>% 
+  summarise(min.pt = quantile(pseudotime.pred, 0.3),
+            max.pt = quantile(pseudotime.pred, 0.7)) %>% 
+  arrange(min.pt)
+N <- nrow(segment.plot)
+
+data.plot <- rbind(ctrl_cum, test_cum) 
+data.plot %>% 
+  ggplot(aes(pseudotime.pred, cum)) + 
+  # annotate("rect", xmin = segment.plot$min.pt, xmax = c(segment.plot$min.pt[-1], max(segment.plot$max.pt)),
+  #          ymin = -Inf, ymax = 0,
+  #          fill = ggsci::pal_d3("category20")(N), color = ggsci::pal_d3("category20")(N)) +
+  geom_jitter(inherit.aes = F, data = subset(data.plot, genotype == 'WT'), 
+              aes(pseudotime.pred, -0.05, color = celltype.pred), 
+              height = 0.05, size = .5, alpha = 1, show.legend = F) +
+  geom_jitter(inherit.aes = F, data = subset(data.plot, genotype == 'Ythdc2-KO'), 
+              aes(pseudotime.pred, -0.2, color = celltype.pred), 
+              height = 0.05, size = .5, alpha = 1, show.legend = F) +
+  annotate("text", x = c(38,38), y = c(-0.05, -0.2), label = c("WT", "KO")) + 
+  geom_line(aes(linetype=genotype)) + 
+  ggsci::scale_color_d3() + 
+  geom_vline(xintercept = 51.8, linetype="dashed", color="blue") +
+  labs(x = "Pseudotime", y = "Cumulative proportion of cells") + 
+  theme_bw(base_size = 15) + 
+  theme(legend.title = element_blank(),
+        legend.position = c(0.2, 0.85),
+        legend.background = element_rect(size=.5, color="black"))
+
+ggsave(file.path(OUTPATH, "plots/projection.pseudotime.png"), width = 5, height = 4, units = "in", dpi = 600)
+```
+
+```{r}
+seu.clean <- subset(seu, cells = rownames(query.plot))
+seu.clean$celltype.pred <- factor(seu.clean$celltype.pred, levels = levels(query.plot$celltype.pred))
+saveRDS(seu.clean, file.path(OUTPATH, "output.Ythdc2KO_vs_WT.clean.rds"))
+```
+
+## 6. Molecular change
+
+```{r, eval=FALSE}
+rm(list=ls())
+gc()
+```
+
+```{r}
+OUTPATH <- "case2_data"
+seu <- readRDS(file.path(OUTPATH, "output.Ythdc2KO_vs_WT.clean.rds"))
+seu$genotype <- factor(ifelse(seu$genotype == "WT", "WT", "Ythdc2-KO"), levels = c("WT", "Ythdc2-KO"))
+DimPlot(seu, reduction = "umap_pred", group.by = "celltype.pred", split.by = "genotype")
+```
+
+### 6.1 Imputation
+
+```{r}
+# split data
+seu.list <- SplitObject(seu, split.by = "genotype")
+
+# drop unexpressed genes
+expr.in.cells <- Matrix::rowSums(seu[["RNA"]]@counts > 0)
+select.features <- names(expr.in.cells[expr.in.cells >= 100])
+
+# imputation
+seu.list <- lapply(seu.list, function(object) {
+  object = Rmagic::magic(object, genes = select.features, seed = 1024, npca=15)
+  DefaultAssay(object) <- "MAGIC_RNA"
+  object
+})
+# merge data
+seu.magic <- merge(seu.list$WT, seu.list$`Ythdc2-KO`)
+seu.magic$celltype.pred <- seu@meta.data[colnames(seu.magic), ]$celltype.pred
+seu.magic$genotype <- seu@meta.data[colnames(seu.magic), ]$genotype
+```
+
+### 6.2 Variance decompose
+
+```{r}
+seu.magic$pseudotime.bin <- infotheo::discretize(seu.magic$pseudotime.pred, disc = "equalwidth", 20)[[1]]
+
+imputed.data <- FetchData(seu.magic, vars = select.features)
+vd.vars <- c("pseudotime.bin", "genotype")
+meta.data <- seu.magic@meta.data[, vd.vars]
+
+vd.res <- Gadest::VarDecompose(data = imputed.data, meta.data = meta.data, vd.vars = vd.vars, cores = 20)
+```
+
+```{r, fig.width=5, fig.height=4.5}
+lmm.res <- vd.res
+lmm.res$pseudotime <- lmm.res$pseudotime.bin
+lmm.res$genename <- lmm.res$gene
+
+data.label <- lmm.res %>% subset(genename %in% c("Ythdc2", "Cox7b", "Mettl9", "Cox8a"))
+data.label2 <- lmm.res %>% subset(genename %in% c("Dmc1", "Stra8", "Meiob", "Gm960"))
+
+lmm.res %>% 
+  mutate(new.group = ifelse(genotype > 0.2 & genotype > pseudotime, "red", "grey") ) %>% 
+  ggplot(aes(pseudotime, genotype)) + 
+  geom_point(aes(color = new.group), size = 0.5, alpha=1) + 
+  geom_point(inherit.aes = F, data = data.label, aes(pseudotime, genotype),
+             size = 1, shape=21, color="black") + 
+  ggrepel::geom_text_repel(inherit.aes = F, data = data.label, aes(pseudotime, genotype, label=genename), color="black") + 
+  geom_point(inherit.aes = F, data = data.label2, aes(pseudotime, genotype),
+             size = 1, shape=21, color="black") + 
+  ggrepel::geom_text_repel(inherit.aes = F, data = data.label2, aes(pseudotime, genotype, label=genename), color="black") + 
+  geom_abline(slope = 1, intercept = 0, color="blue", linetype="dashed") +
+  geom_hline(yintercept = 0.2, color = "blue", linetype="dashed") +
+  scale_color_manual(values = c("grey", "lightblue")) + 
+  theme_bw(base_size = 15) + 
+  labs(x = "Fraction of variance across\npseudotime", y = "Fraction of variance across\ngenotype") + 
+  theme(
+    panel.grid = element_blank(),
+    legend.title = element_blank(),
+    legend.position = "none",
+    legend.background = element_blank(),
+    axis.text = element_text(color = "black")
+  )
+
+ggsave(file.path(OUTPATH, "plots/global_analysis.variance_decomposition.png"), width = 5, height = 4.5, units = "in", dpi = 600)
+```
+
+```{r, fig.width=6, fig.height=10}
+FeaturePlot(seu, reduction = "umap_pred", features = data.label$gene, ncol = 4, split.by = "genotype") & NoAxes()
+ggsave(file.path(OUTPATH, "plots/global_analysis.DEGs.examples.png"), width = 6, height = 10, units = "in", dpi = 600)
+
+FeaturePlot(seu, reduction = "umap_pred", features = data.label2$gene, ncol = 4, split.by = "genotype") & NoAxes()
+ggsave(file.path(OUTPATH, "plots/global_analysis.nonDEGs.examples.png"), width = 6, height = 10, units = "in", dpi = 600)
+```
+
+### 6.3 Estimate expression shift
+
+```{r}
+genes.use <- vd.res %>% subset(genotype >= 0.2 & genotype > pseudotime.bin) %>% rownames()
+counts <- seu[["RNA"]]@counts[genes.use, ]
+
+es.df <- Gadest::EstimateExpressionShift(counts = counts, 
+                                         cell.types = seu.magic$pseudotime.bin, 
+                                         groups = seu$genotype, 
+                                         n.samples = 100, 
+                                         n.bins = 20, 
+                                         min.cells = 5, 
+                                         n.cells = 40, 
+                                         n.cells.pairs = 40, 
+                                         cores = 20)
+```
+
+```{r eval=FALSE}
+saveRDS(vd.res, file.path(OUTPATH, "global_analysis.variance_decomposition.rds"))
+saveRDS(es.df, file.path(OUTPATH, "global_analysis.expression_shift.rds"))
+```
+
+```{r, fig.width=6, fig.height=4}
+es.df <- readRDS(file.path(OUTPATH, "global_analysis.expression_shift.rds"))
+
+es.df <- es.df %>% 
+  pivot_longer(2:ncol(.), names_to = "pseudotime.bin", values_to = "expr.change")
+
+data.use <- seu.magic@meta.data[, c("pseudotime.bin", "pseudotime.pred")]
+data.use$pseudotime.bin <- factor(data.use$pseudotime.bin, levels = 1:20)
+data.use <- data.use %>% 
+  group_by(pseudotime.bin) %>% 
+  summarise(pst.min = min(pseudotime.pred) %>% round(1),
+            pst.max = max(pseudotime.pred) %>% round(1))
+axis.labels <- sprintf("(%s, %s]", data.use$pst.min, data.use$pst.max)
+names(axis.labels) <- data.use$pseudotime.bin
+
+## hash: pseudotime.bin => predicted cell type
+mat <- as.matrix(table(seu.magic$pseudotime.bin, seu.magic$celltype.pred))
+pt2ct <- apply(mat, 1, function(xx) xx[which.max(xx)] %>% names())
+
+es.df$stage <- pt2ct[es.df$pseudotime.bin]
+es.df$stage <- factor(es.df$stage, levels = levels(seu.magic$celltype.pred))
+
+es.df <- es.df %>% 
+  mutate(pseudotime.bin = factor(pseudotime.bin, levels = 1:20))
+
+es.df %>% 
+  ggplot(aes(pseudotime.bin, log2(expr.change), fill = stage)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_hline(yintercept = 0, color = "blue", linetype="dashed") + 
+  guides(fill = guide_legend(ncol = 3)) + 
+  xlab("Pseudotime") + ylab("Expression shift") + ggtitle("Ythdc2-KO vs WT") + 
+  scale_x_discrete(labels = axis.labels[unique(es.df$pseudotime.bin)]) + 
+  ggsci::scale_fill_d3() + 
+  theme_bw(base_size = 15) + 
+  theme(axis.text = element_text(color = "black"),
+        plot.title = element_text(hjust = .5),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom",
+        legend.background = element_blank(),
+        legend.title = element_blank())
+
+ggsave(file.path(OUTPATH, "plots/global_analysis.expression_shift.png"), width = 6, height = 4, units = "in", dpi = 600)
+```
+
+```{r, fig.width=6, fig.height=4}
+## Ythdc2 expression
+data.use <- FetchData(seu.magic, vars = c("pseudotime.bin", "Ythdc2", "genotype"))
+ggplot(data.use, aes(factor(pseudotime.bin), Ythdc2)) + 
+  geom_boxplot(aes(color = genotype), outlier.shape = NA) +
+  scale_x_discrete(labels = axis.labels) + 
+  xlab("Pseudotime") + ylab("Ythdc2 (imputed)") + 
+  theme_bw(base_size = 15) + 
+  theme(axis.text = element_text(color = "black"),
+        plot.title = element_text(hjust = .5),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = c(0.12, 0.9),
+        legend.background = element_blank(),
+        legend.title = element_blank())
+
+ggsave(file.path(OUTPATH, "plots/global_analysis.Ythdc2_imputed_expression.png"), width = 6, height = 4, units = "in", dpi = 600)
+```
+
+
+### 6.4 Summerise DEGs
+
+```{r}
+data.use <- imputed.data[, genes.use, drop=F]
+data.use$pseudotime.bin <- factor(meta.data$pseudotime.bin, levels = levels(es.df$pseudotime.bin))
+data.use$genotype <- meta.data$genotype
+
+data.use <- data.use %>% 
+  pivot_longer(1:length(genes.use), names_to = "gene", values_to = "expr") %>% 
+  group_by(gene, pseudotime.bin, genotype) %>% 
+  summarise(median.expr = median(expr)) %>% 
+  ungroup()
+
+data.use <- data.use %>% 
+  pivot_wider(names_from = c("pseudotime.bin"), values_from = "median.expr") 
+
+input.mat.1 <- subset(data.use, genotype == "WT") %>% select_if(~ !any(is.na(.)))
+input.mat.2 <- subset(data.use, genotype == "Ythdc2-KO") %>% select_if(~ !any(is.na(.)))
+
+genes.1 <- input.mat.1$gene
+genes.2 <- input.mat.2$gene
+input.mat.1 <- input.mat.1 %>% select(-c(1:2)) %>% as.matrix()
+input.mat.2 <- input.mat.2 %>% select(-c(1:2)) %>% as.matrix()
+rownames(input.mat.1) <- genes.1
+rownames(input.mat.2) <- genes.2
+
+input.mat <- cbind(input.mat.1, input.mat.2[genes.1, ])
+
+input.mat.scaled <- t(scale(t(input.mat)))
+
+col.meta.1 <- data.frame(
+  group = "WT",
+  pseudotime = factor(colnames(input.mat.1), levels = levels(es.df$pseudotime.bin)),
+  cell.type = pt2ct[colnames(input.mat.1)]
+)
+
+col.meta.2 <- data.frame(
+  group = "Ythdc2-KO",
+  pseudotime = factor(colnames(input.mat.2), levels = levels(es.df$pseudotime.bin)),
+  cell.type = pt2ct[colnames(input.mat.2)]
+)
+
+col.meta <- rbind(col.meta.1, col.meta.2)
+
+pccMat <- cor(t(input.mat))
+csiMat <- Gadest::CalculateCSIMatrix(pccMat, cores = 20)
+
+saveRDS(csiMat, file.path(OUTPATH, "DEGs_summary.csiMat.rds"))
+
+## clustering
+set.seed(1024)
+clu = kmeans(csiMat, centers = 7)
+partition = clu$cluster
+
+clusters = data.frame(
+  row.names = rownames(csiMat),
+  gene = rownames(csiMat),
+  cluster = LETTERS[partition]
+)
+
+write.table(clusters, file.path(OUTPATH, "DEGs_summary.gene_clusters.txt"), sep = "\t", quote = F)
+
+clusters <- read.table("case2_data/DEGs_summary.gene_clusters.txt", header = T, row.names = 1)
+```
+
+```{r, fig.width=10, fig.height=7}
+library(ComplexHeatmap)
+
+cell.type.uniq <- unique(col.meta$cell.type)
+cell.type.colors <- ggsci::pal_d3("category20")(length(cell.type.uniq))
+names(cell.type.colors) <- cell.type.uniq
+
+col.meta$cell.type <- factor(col.meta$cell.type, levels = cell.type.uniq)
+
+ha.col <- HeatmapAnnotation(
+  cell.type = col.meta$cell.type, annotation_name_gp = gpar(fontsize = 15),
+  col = list(cell.type = cell.type.colors),
+  show_legend = F
+)
+
+col_range = c(-3,0,3)
+col_fun <- circlize::colorRamp2(col_range, c("blue","white","red"))
+
+ht <- Heatmap(
+  input.mat.scaled, 
+  name = "ht1",
+  col = col_fun,
+  top_annotation = ha.col, 
+  cluster_rows = F, cluster_columns = F, 
+  show_row_names = F, show_column_names = F, 
+  split = clusters$cluster, 
+  column_title_gp = gpar(fontsize = 20),
+  row_title_rot = 0, row_title_gp = gpar(fontsize = 20),
+  column_split = col.meta$group,
+  show_heatmap_legend = F)
+
+lgd <- Legend(
+  col_fun = col_fun, 
+  title = "Z score of expression", 
+  title_position = "topcenter",
+  at = col_range, 
+  direction = "horizontal",
+  legend_width = unit(2, "in"),
+  border = FALSE
+)
+
+lgd_list = list(
+  Legend(labels = cell.type.uniq, labels_gp = gpar(fontsize = 13),
+         legend_gp = gpar(fill = cell.type.colors, size = 20), 
+         title = "cell.type", title_gp = gpar(fontsize = 15),
+         grid_height = unit(5, "mm"), grid_width = unit(5, "mm"),
+         ncol = 1, row_gap = unit(1, "mm"))
+)
+
+png(file.path(OUTPATH, "plots/DEGs_summary.heatmap.png"), width = 10, height = 7, units = "in", res = 600)
+draw(ht, heatmap_legend_list = list(lgd), heatmap_legend_side = c("bottom"), annotation_legend_list = lgd_list)
+dev.off()
+
+saveRDS(input.mat.scaled, file.path(OUTPATH, "DEGs_summary.input.mat.scaled.rds"))
+saveRDS(col.meta, file.path(OUTPATH, "DEGs_summary.col.meta.rds"))
+```
+
+### 6.5 Functional analysis
+
+```{r, fig.width=7, fig.height=6}
+t2g <- readRDS("example_dataset/MGI_GO_BP.term2gene.rds")
+t2n <- readRDS("example_dataset/MGI_GO_BP.term2name.rds")
+
+ego.list <- lapply(sort(unique(clusters$cluster)), function(clu) {
+  genes <- subset(clusters, cluster == clu)$gene
+  clusterProfiler::enricher(gene = genes, TERM2GENE = t2g, TERM2NAME = t2n, pvalueCutoff = 1, minGSSize = 0)
+})
+names(ego.list) <- sort(unique(clusters$cluster))
+
+data.use <- lapply(names(ego.list), function(xx) {
+  res <- head(ego.list[[xx]]@result, 5)
+  res$group <- xx
+  res
+}) %>% Reduce(rbind, .)
+
+term.levels <- unique(data.use$Description)
+
+data.use <- lapply(names(ego.list), function(xx) {
+  res <- subset(ego.list[[xx]]@result, Description %in% term.levels)
+  res$group <- xx
+  res
+}) %>% Reduce(rbind, .)
+
+data.use$Description <- factor(data.use$Description, levels = rev(term.levels))
+data.use <- subset(data.use, p.adjust < 0.05 & Count > 3)
+
+ggplot(data.use, aes(group, Description)) + 
+  geom_point(aes(size = Count, fill = -log10(p.adjust)), shape=21, color = "black") + 
+  scale_fill_gradientn(colors = c("white","red")) + 
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 50)) + 
+  labs(x = "gene cluster") + 
+  theme_bw(base_size = 13) + 
+  theme(axis.title.y = element_blank(),
+        axis.text = element_text(color = "black"))
+
+saveRDS(ego.list, file.path(OUTPATH, "DEGs_summary.ego.list.rds"))
+ggsave(file.path(OUTPATH, "plots/DEGs_summary.enriched_GO.png"), width = 7, height = 6, units = "in", dpi = 600)
+```
+
+```{r}
+sessionInfo()
+```
+
+
