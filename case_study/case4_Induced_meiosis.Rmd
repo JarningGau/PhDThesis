@@ -101,6 +101,7 @@ DimPlot(seu, group.by = "celltype.pred", reduction = "umap_pred", split.by = "Da
 
 ```{r, eval=FALSE}
 saveRDS(seu, file.path(OUTPATH, "output.Induced_meiosis.rds"))
+seu <- readRDS(file.path(OUTPATH, "output.Induced_meiosis.rds"))
 ```
 
 ## 2. Visulization
@@ -126,9 +127,9 @@ ggsave(file.path(OUTPATH, "plots/projection.umap.plot.png"), width = 10, height 
 
 ```{r, fig.width=5, fig.height=4}
 cal_cum <- . %>% 
-    arrange(pseudotime.pred) %>% 
-    mutate(rank = order(pseudotime.pred)) %>% 
-    mutate(cum = rank/max(rank))
+  arrange(pseudotime.pred) %>% 
+  mutate(rank = order(pseudotime.pred)) %>% 
+  mutate(cum = rank/max(rank))
 
 Day0_cum <- query.plot %>% subset(Days == "Day0") %>% cal_cum()
 Day2_cum <- query.plot %>% subset(Days == "Day2") %>% cal_cum()
@@ -173,15 +174,45 @@ ggsave(file.path(OUTPATH, "plots/projection.pseudotime.png"), width = 5, height 
 ```{r}
 seu.clean <- subset(seu, cells = rownames(query.plot))
 seu.clean$celltype.pred <- factor(seu.clean$celltype.pred, levels = levels(query.plot$celltype.pred))
+
+chrX.genes <- readLines("mTCA_data/mm10.ens98.chrX.genes.txt")
+seu.clean[["percent.chrX"]] <- PercentageFeatureSet(seu.clean, features = intersect(chrX.genes, rownames(seu.clean)))
 saveRDS(seu.clean, file.path(OUTPATH, "output.Induced_meiosis.clean.rds"))
 ```
 
-## 3. Meiosis program
+## 3. Paired refernece 
 
 ```{r}
-rm(list=ls())
-gc()
+chrX.genes <- readLines("mTCA_data/mm10.ens98.chrX.genes.txt")
+mtca.cellmeta <- readRDS("mTCA_data/mTCA_cellmeta.rds")
+ref.cells <- rownames(subset(mtca.cellmeta, Pseudotime_dm > 34 & Pseudotime_dm < 60 & Platform == "10xv2"))
+
+counts <- readRDS("mTCA_data/mTCA.counts.rds")
+counts <- counts[, ref.cells]
+
+seu.ref <- CreateSeuratObject(counts = counts)
+seu.ref[["percent.chrX"]] <- PercentageFeatureSet(seu.ref, features = intersect(chrX.genes, rownames(seu.ref)))
+
+seu.ref$cell_type <- mtca.cellmeta[ref.cells, ]$Cell_type_final
+
+
+## projection
+seu.ref <- ComputeModuleScore(seu.ref, gene.sets = top.genes, cores = 20)
+DefaultAssay(seu.ref) <- "AUCell"
+
+newdata <- FetchData(seu.ref, vars = rownames(seu.ref))
+colnames(newdata) = sub("-", "_", colnames(newdata))
+
+pst.proj <- ProjectNewdata(feature.mat = newdata, model = pst.model, do.norm = "L2", cores = 20)
+
+DefaultAssay(seu.ref) <- "RNA"
+seu.ref$pseudotime.pred <- pst.proj@embeddings[, 1]
+
+saveRDS(seu.ref, file.path(OUTPATH, "mTCA_paired.seurat.rds"))
 ```
+
+
+## 4. Meiosis program
 
 ```{r}
 OUTPATH <- "case4_data"
@@ -192,9 +223,10 @@ seu <- readRDS(file.path(OUTPATH, "output.Induced_meiosis.clean.rds"))
 ```{r, fig.width=12, fig.height=6}
 FeaturePlot(seu, reduction = "umap_pred", features = c("Gm960", "Prdm9"), split.by = "Days")
 FeaturePlot(seu, reduction = "umap_pred", features = c("Dmc1", "Gm4969"), split.by = "Days")
+FeaturePlot(seu, reduction = "umap_pred", features = c("Dmrtb1", "Gfra1"), split.by = "Days")
 ```
 
-### 3.1 Imputation
+### 4.1 Imputation
 
 ```{r}
 # split data
@@ -217,17 +249,246 @@ seu.magic$celltype.pred <- seu@meta.data[colnames(seu.magic), ]$celltype.pred
 
 ```{r, eval=FALSE}
 save(seu.magic, file = file.path(OUTPATH, "seu.magic.rdata"))
+load(file.path(OUTPATH, "seu.magic.rdata"))
+```
+
+markers
+
+```{r, fig.width=7, fig.height=8}
+markers <- c("Gfra1", "Etv5", "Dmrtb1", "Kit", "Prdm9", "Dmc1", "Meiob", "Rad51ap2")
+data.plot <- FetchData(seu.magic, vars = c(markers, "pseudotime.pred", "celltype.pred", "Days"))
+
+data.plot <- data.plot %>% 
+  pivot_longer(cols = 1:length(markers), names_to = "gene", values_to = "expr") %>% 
+  mutate(gene = factor(gene, levels = markers))
+
+ggplot(data.plot, aes(pseudotime.pred, expr)) + 
+  geom_point(aes(color = celltype.pred), size = .2) + 
+  geom_smooth() + 
+  xlab("Pseudotime") + ylab("Expression (imputated)") + 
+  facet_wrap(~gene, ncol = 2, scales = "free_y") + 
+  guides(color = guide_legend(title = "", override.aes = list(size = 3))) + 
+  ggsci::scale_color_d3() + 
+  theme_bw(base_size = 14) + 
+  theme(strip.text = element_text(face = "bold"),
+        legend.position = "top")
+
+ggsave(file.path(OUTPATH, "plots/known_markers.imputed.png"), width = 7, height = 8, units = "in", dpi = 600)
+```
+
+```{r, fig.width=16, fig.height=4}
+library(ggtern)
+
+data.plot <- FetchData(seu.magic, vars = c("Gfra1", "Kit", "Dmc1", "celltype.pred", "Days"))
+
+ggtern(data.plot, aes(x = Gfra1, y = Kit, z = Dmc1, color = celltype.pred)) + 
+  geom_point(size = .1) + 
+  guides(color = guide_legend(override.aes = list(size = 3))) + 
+  facet_wrap(~Days, nrow = 1) + 
+  ggsci::scale_color_d3() + 
+  theme_rgbw(base_size = 10) + 
+  theme(strip.text = element_text(size = 13, face = "bold"))
+
+ggsave(file.path(OUTPATH, "plots/three_marker.ternary.png"), width = 16, height = 4)
+```
+
+```{r, fig.width=6, fig.height=4}
+data.plot <- FetchData(seu, vars = c("celltype.pred", "Days"))
+
+ggplot(data.plot, aes(Days, fill = celltype.pred)) + 
+  geom_bar(position = "fill") + 
+  ggsci::scale_fill_d3() + 
+  scale_y_continuous(labels = scales::percent_format()) + 
+  xlab("") + ylab("Percent of cells") + 
+  theme_bw(base_size = 14) + 
+  theme(axis.text = element_text(color = "black"))
+
+ggsave(file.path(OUTPATH, "plots/percent_of_cells.celltype.pred.png"), width = 6, height = 4)
+
+prop.table(table(seu$celltype.pred, seu$Days), 2)
 ```
 
 
-```{r, fig.width=8, fig.height=3}
-markers <- c("Gm4969", "Prdm9", "Gm960", "Dmc1", "Gfra1")
-data.plot <- FetchData(seu.magic, vars = c(markers, "pseudotime.pred", "celltype.pred", "Days"))
+### 4.2 Meiosis hallmarks
 
-ggplot(data.plot, aes(pseudotime.pred, Gfra1)) + 
-  geom_point(aes(color = celltype.pred), size = .2) + 
-  geom_smooth() + 
-  guides(color = guide_legend(title = "", override.aes = list(size = 3))) + 
-  ggsci::scale_color_d3()
+MSCI
+
+```{r}
+seu.ref <- readRDS(file.path(OUTPATH, "mTCA_paired.seurat.rds"))
+seu <- readRDS(file.path(OUTPATH, "output.Induced_meiosis.clean.rds"))
+
+seu.ref$source <- "mTCA"
+seu$source <- "in vitro meiosis"
+```
+
+```{r, fig.width=6, fig.height=4}
+vars <- c("source", "pseudotime.pred", "percent.chrX")
+data.plot <- rbind(seu@meta.data[, vars], seu.ref@meta.data[, vars])
+
+data.plot %>% 
+  ggplot(aes(pseudotime.pred, percent.chrX, color=source, group=source)) + 
+  geom_point(size=.1, alpha=.1) + 
+  geom_smooth() +  
+  xlim(35, 60) + 
+  guides(color=guide_legend(override.aes=list(fill=NA))) + 
+  labs(x = "Pseudotime", y = "% of UMIs on chrX") + 
+  ggtitle("MSCI") + 
+  theme_classic(base_size = 15) + 
+  theme(legend.position = c(0.2,0.85)) + 
+  theme(legend.title = element_blank(),
+        plot.title = element_text(face = "bold", hjust = .5),
+        axis.text = element_text(color = "black"))
+
+ggsave(file.path(OUTPATH, "plots/hallmark.MSCI.png"), width = 6, height = 4, units = "in", dpi = 600)
+```
+
+Gene signature
+
+```{r}
+ref.markers <- read.table("../../testicular_cell_atlas/results/08.iterative_clustering/celltype_markers.mTCA.tsv", sep = "\t", header = T)
+clusters <- unique(ref.markers$cluster)
+ref.markers <- lapply(clusters, function(xx) subset(ref.markers, cluster == xx)$Gene.name.uniq %>% head(100))
+names(ref.markers) <- clusters
+signatures <- c("type A spermatogonia", "type B spermatogonia", "pre Leptotene", "Leptotene", "Zygotene", "Pachytene")
+gene.sets <- ref.markers[signatures]
+
+seu.ref[["AUCell"]] = NULL
+seu[["AUCell"]] = NULL
+
+seu.ref <- ComputeModuleScore(seu.ref, gene.sets = gene.sets, cores = 10)
+seu <- ComputeModuleScore(seu, gene.sets = gene.sets, cores = 10)
+
+DefaultAssay(seu.ref) <- "AUCell"
+DefaultAssay(seu) <- "AUCell"
+```
+
+
+```{r, fig.width=12, fig.height=8}
+vars <- c(signatures, "source", "pseudotime.pred")
+data.plot <- rbind(
+  FetchData(seu.ref, vars = c(vars)),
+  FetchData(seu, vars = c(vars))
+)
+
+data.plot <- data.plot %>% 
+  pivot_longer(cols = 1:length(signatures), names_to = "signature", values_to = "score")
+data.plot$signature <- factor(data.plot$signature, levels = c(signatures))
+
+data.plot %>% 
+  group_split(signature) %>% 
+  map(
+    ~ggplot(., aes(pseudotime.pred, score, color=source, group=source)) + 
+      geom_point(size=.1, alpha=.1) + 
+      geom_smooth() +
+      xlim(35, 60) + 
+      xlab("Pseudotime") + ylab("AUCell score") + 
+      guides(color=guide_legend(override.aes=list(fill=NA))) + 
+      facet_grid(~ signature, labeller = function(x) label_value(x, multi_line = FALSE)) + 
+      theme_classic(base_size = 15) + 
+      theme(legend.position = c(0.22,0.9),
+            legend.title = element_blank(),
+            legend.background = element_blank(),
+            strip.background = element_blank(),
+            strip.text = element_text(face = "bold", size = 16),
+            axis.text = element_text(color = "black"))
+  ) %>% cowplot::plot_grid(plotlist = ., align = "hv")
+
+ggsave(file.path(OUTPATH, "plots/hallmark.signature.png"), width = 12, height = 8, units = "in", dpi = 600)
+saveRDS(data.plot, file.path(OUTPATH, "spermatogenesis.hallmarks.rds"))
+```
+
+```{r, fig.width=12, fig.height=5}
+library(ggtern)
+
+data.plot.1 <- FetchData(seu, vars = c("celltype.pred", "source", "type A spermatogonia", "type B spermatogonia", "pre Leptotene", "Leptotene", "Zygotene"))
+data.plot.2 <- FetchData(seu.ref, vars = c("cell_type", "source", "type A spermatogonia", "type B spermatogonia", "pre Leptotene", "Leptotene", "Zygotene"))
+
+ct.levels <- c(levels(data.plot.1$celltype.pred), "Zygotene")
+data.plot.2 <- data.plot.2 %>% 
+  filter(cell_type %in% ct.levels) %>% 
+  mutate(cell_type = factor(cell_type, levels = ct.levels))
+
+data.plot.1$cell_type <- data.plot.1$celltype.pred
+data.plot.1$celltype.pred <- NULL
+
+data.plot <- rbind(data.plot.1, data.plot.2)
+
+ggtern(data = data.plot, 
+       aes(x = `type A spermatogonia`, y = Leptotene, z = Zygotene, color = cell_type)) + 
+  geom_point(size = .1) +
+  guides(color = guide_legend(override.aes = list(size = 3))) + 
+  ggsci::scale_color_d3() + 
+  facet_wrap(~source) + 
+  theme_rgbw(base_size = 15) + 
+  theme(legend.title = element_blank(),
+        strip.text = element_text(hjust = .5, size = 18, face = "bold"),
+        strip.background = element_blank())
+
+ggsave(file.path(OUTPATH, "plots/hallmark.signature.ternary.png"), width = 12, height = 5)
+```
+
+```{r, fig.width=6, fig.height=4}
+entropy <- apply(data.plot[, 2:5], 1, function(xx) entropy::entropy.empirical(xx, unit = "log2"))
+data.plot$entropy <- entropy
+
+data.stat <- data.plot %>% 
+  filter(cell_type != "Zygotene") %>% 
+  group_split(cell_type) %>% 
+  map(.x = ., .f = function(xx) {
+    y1 <- subset(xx, source == "in vitro meiosis")$entropy %>% sample(30, replace = T)
+    y2 <- subset(xx, source == "mTCA")$entropy %>% sample(30, replace = T)
+    wilcox.test(y1, y2)$p.value
+  }) %>% unlist()
+
+p2star <- function(x) {
+  sapply(x, function(y) {
+    if (y > 0.05) {
+      return("NS")
+    } else if (y > 0.01) {
+      return("*")
+    } else if (y > 0.001) {
+      return("**")
+    } else if (y > 0.0001){
+      return("***")
+    } else {
+      return("****")
+    }
+  })
+}
+
+data.plot %>% 
+  filter(cell_type != "Zygotene") %>% 
+  ggplot(aes(cell_type, entropy, fill = source)) +
+  geom_boxplot(outlier.shape = NA) + 
+  ggsignif::geom_signif(y_position=2, xmin=1:6-0.2, xmax=1:6+0.2,
+                        annotation=p2star(data.stat), tip_length=0.01) + 
+  labs(x = "", y = "Signature entropy") + 
+  ylim(1.8, 2.01) + 
+  scale_x_discrete(labels = c("T.pro", "undiff", "type A", "type B", "preL", "L", "Z")) + 
+  guides(fill = guide_legend(title = "")) + 
+  theme_bw(base_size = 15) + 
+  theme(axis.text = element_text(color = "black"), 
+        legend.background = element_blank(),
+        legend.position = c(0.2, 0.2))
+
+ggsave(file.path(OUTPATH, "plots/signature_entropy.png"), width = 6, height = 4)
+```
+
+
+```{r, fig.width=10, fig.height=4}
+data.plot$source <- factor(data.plot$source, levels = c("mTCA", "in vitro meiosis"))
+
+ggplot(data.plot, aes(`Leptotene`, `type A spermatogonia`, color = cell_type)) + 
+  geom_point(size = .1) + 
+  geom_hline(yintercept = 0.6, linetype = "dashed", color = "blue") + 
+  geom_vline(xintercept = 0.6, linetype = "dashed", color = "blue") + 
+  guides(color = guide_legend(override.aes = list(size = 3))) + 
+  ggsci::scale_color_d3() + 
+  labs(x = "Leptotene (AUCell score)", y = "B spermatogonia (AUCell score)") + 
+  facet_wrap(~source) + 
+  theme_bw(base_size = 15) + 
+  theme(legend.title = element_blank(),
+        strip.text = element_text(hjust = .5, size = 16, face = "bold"),
+        strip.background = element_blank())
 ```
 

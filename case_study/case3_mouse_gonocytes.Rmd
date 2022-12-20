@@ -98,7 +98,6 @@ celltype.pred <- PredictNewdata(feature.mat = newdata, model = celltype.model, d
 DefaultAssay(seu) <- "RNA"
 seu[["umap_pred"]] = CreateDimReducObject(embeddings = as.matrix(umap.proj@embeddings), assay = "RNA")
 seu$celltype.svm <- celltype.pred$Cell_type_final
-seu$celltype.svm.major_votes <- major.votes$Cell_type_final.major_votes
 
 DimPlot(seu, reduction = "umap_pred", group.by = "cell_type", label = F, pt.size = 1) +
   ggsci::scale_color_d3("category20")
@@ -134,12 +133,13 @@ ggsave(file.path(OUTPATH, "plots/projection.map_quanlity.png"), width = 10, heig
 ```
 
 ```{r}
+seu$celltype.svm[seu$celltype.svm == "Mitotic arrest PGCs"] <- "Quiescent prospermatogonia"
 celltype.cells <- table(seu$celltype.svm)
 celltype.show <- names(celltype.cells)[celltype.cells > 5]
 
 seu.clean <- subset(seu, celltype.svm %in% celltype.show)
 
-germ.levels <- c("Mitotic arrest PGCs", "Quiescent prospermatogonia", "Transitional prospermatogonia", "undiff A spermatogonia", "type A spermatogonia", "type B spermatogonia", "pre Leptotene", "Leptotene")
+germ.levels <- c("Quiescent prospermatogonia", "Transitional prospermatogonia", "undiff A spermatogonia", "type A spermatogonia", "type B spermatogonia", "pre Leptotene", "Leptotene")
 soma.levels <- c("Sertoli cells", "Stromal cells", "Leydig cells", "Myoid cells", "Macrophages", "Endothelial cells")
 seu.clean$celltype.major <- ifelse(seu.clean$celltype.svm %in% germ.levels, "Germ cells", "Somatic cells")
 seu.clean$celltype.svm <- factor(seu.clean$celltype.svm, levels = c(germ.levels, soma.levels))
@@ -153,7 +153,7 @@ ggsave(file.path(OUTPATH, "plots/dimplot.celltype.svm.png"), width = 7, height =
 Idents(seu.clean) <- seu.clean$celltype.svm
 seu.germ <- subset(seu.clean, celltype.major == "Germ cells")
 
-DimPlot(seu.germ, pt.size = 1, label = F) + ggsci::scale_color_d3("category20")
+DimPlot(seu.germ, pt.size = 1, label = F) + ggsci::scale_color_d3("category10")
 ggsave(file.path(OUTPATH, "plots/dimplot.celltype.germ_cells.png"), width = 7, height = 5, units = "in", dpi = 600)
 ```
 
@@ -161,23 +161,75 @@ ggsave(file.path(OUTPATH, "plots/dimplot.celltype.germ_cells.png"), width = 7, h
 saveRDS(seu, file.path(OUTPATH, "output.neonatal_testis.rds"))
 saveRDS(seu.clean, file.path(OUTPATH, "output.neonatal_testis.clean.rds"))
 saveRDS(seu.germ, file.path(OUTPATH, "output.neonatal_testis.germ_cells.rds"))
+
+# seu <- readRDS(file.path(OUTPATH, "output.neonatal_testis.rds"))
+# seu.clean <- readRDS(file.path(OUTPATH, "output.neonatal_testis.clean.rds"))
 ```
 
 ## 4. Visulization
 
-```{r, fig.width=8, fig.height=5}
+```{r, fig.width=7, fig.height=5}
 ref.plot <- sample_n(cellmeta, size = 50000)[, paste0("UMAP_", 1:2)]
-query.plot <- FetchData(seu.clean, vars = c(paste0("UMAP_", 1:2), "celltype.svm", "Dpp") )
+query.plot <- FetchData(seu.clean, vars = c(paste0("UMAP_", 1:2), "celltype.svm", "Dpp", "celltype.major") )
 
 ggplot() + 
   geom_point(data = ref.plot, aes(UMAP_1, UMAP_2), size = .1, alpha=.1, color="grey", show.legend = F) +
   geom_point(data = query.plot, aes(UMAP_1, UMAP_2, color=celltype.svm), size = .3) + 
   ggsci::scale_color_d3("category20") +
-  guides(color = guide_legend(override.aes = list(size=5))) +
-  theme_dimplot()
+  guides(color = guide_legend(title = "Cell type (predicted)", override.aes = list(size=5))) +
+  ggtitle("Neonatal mouse testis (0-10 dpp)") + 
+  theme_void(base_size = 15) + 
+  theme(plot.title = element_text(hjust = .5, face = "bold"))
 
-ggsave(file.path(OUTPATH, "plots/projection.umap.plot.png"), width = 8, height = 5, units = "in", dpi = 600)
+ggsave(file.path(OUTPATH, "plots/projection.umap.plot.png"), width = 7, height = 5, units = "in", dpi = 600)
 ```
+
+```{r, fig.width=5, fig.height=4}
+query.plot$Dpp <- paste(query.plot$Dpp, "dpp")
+query.plot$Dpp <- factor(query.plot$Dpp, levels = paste(0:10, "dpp"))
+
+ggplot() + 
+  geom_point(data = query.plot, aes(UMAP_1, UMAP_2, color=Dpp), size = .3) + 
+  scale_color_viridis_d() + 
+  guides(color = guide_legend(title = "", override.aes = list(size=5))) +
+  ggtitle("Age") + 
+  theme_void(base_size = 15) + 
+  theme(plot.title = element_text(hjust = .5, face = "bold"))
+
+ggplot() + 
+  geom_point(data = query.plot, aes(UMAP_1, UMAP_2, color=celltype.major), size = .3) + 
+  ggsci::scale_color_d3() + 
+  guides(color = guide_legend(title = "", override.aes = list(size=5))) +
+  theme_void(base_size = 15) + 
+  ggtitle("Major cell type") + 
+  theme(plot.title = element_text(hjust = .5, face = "bold"),
+        legend.position = c(0.84, 0.9))
+```
+
+
+```{r, fig.width=12, fig.height=5}
+markers <- c("Dazl", "Dnmt3l", "Id4", "Neurog3", "Kit", "Dmrtb1", "Stra8", "Gm960", "Sox9", "Dcn", "Cyp11a1", "Myh11", "Cd14", "Ly6c1")
+data.plot <- FetchData(seu.clean, vars = c(markers, "celltype.svm"))
+data.plot <- data.plot %>% pivot_longer(cols = 1:length(markers), names_to = "gene", values_to = "logexpr")
+data.plot$gene <- factor(data.plot$gene, levels = markers)
+data.plot$celltype.svm <- forcats::fct_rev(data.plot$celltype.svm)
+
+ggplot(data.plot, aes(celltype.svm, logexpr, fill=celltype.svm)) + 
+  geom_violin(scale = "width", show.legend = F) + 
+  ylab("Log expression") + 
+  coord_flip() + 
+  scale_fill_manual(values = ggsci::pal_d3("category20")(20) %>% rev()) + 
+  facet_grid(~gene) + 
+  theme_bw(base_size = 12) + 
+  theme(panel.grid = element_blank(),
+        axis.text = element_text(color = "black"),
+        axis.text.x = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title.y = element_blank())
+
+ggsave(file.path(OUTPATH, "plots/markers.vlnplot.png"), width = 12, height = 5, units = "in", dpi = 600)
+```
+
 
 ```{r, fig.width=7, fig.height=4}
 data.plot <- FetchData(seu.germ, vars = c("celltype.svm", "Dpp", paste0("UMAP_", 1:2)))
@@ -223,6 +275,49 @@ colnames(umap.proj) <- paste0("umap_", 1:2)
 saveRDS(umap.pca, file.path(OUTPATH, "benchmarkDR.umap_pca.rds"))
 saveRDS(umap.harmony, file.path(OUTPATH, "benchmarkDR.umap_harmony.rds"))
 saveRDS(umap.proj, file.path(OUTPATH, "benchmarkDR.umap_projectSVR.rds"))
+
+umap.pca <- readRDS(file.path(OUTPATH, "benchmarkDR.umap_pca.rds"))
+umap.harmony <- readRDS(file.path(OUTPATH, "benchmarkDR.umap_harmony.rds"))
+umap.proj <- readRDS(file.path(OUTPATH, "benchmarkDR.umap_projectSVR.rds"))
+```
+
+```{r, fig.width=13, fig.height=4}
+umap.pca <- as.data.frame(umap.pca)
+umap.pca$celltype.svm <- seu$celltype.svm
+
+p1 <- ggplot(umap.pca, aes(umap_1, umap_2)) + 
+  geom_point(aes(color = celltype.svm), size = .5) + 
+  theme_dimplot() + 
+  ggsci::scale_color_d3() + 
+  ggtitle("No batch correction") + 
+  theme(plot.title = element_text(hjust = .5, size = 14, face = "bold")) + 
+  NoLegend()
+
+umap.harmony <- as.data.frame(umap.harmony)
+umap.harmony$celltype.svm <- seu$celltype.svm
+
+p2 <- ggplot(umap.harmony, aes(umap_1, umap_2)) + 
+  geom_point(aes(color = celltype.svm), size = .5) + 
+  theme_dimplot() + 
+  ggsci::scale_color_d3() + 
+  ggtitle("Harmony") + 
+  theme(plot.title = element_text(hjust = .5, size = 14, face = "bold")) + 
+  NoLegend()
+
+umap.proj <- as.data.frame(umap.proj)
+umap.proj$celltype.svm <- seu$celltype.svm
+
+p3 <- ggplot(umap.proj, aes(umap_1, umap_2)) + 
+  geom_point(aes(color = celltype.svm), size = .5) + 
+  theme_dimplot() + 
+  ggsci::scale_color_d3() + 
+  ggtitle("ProjectSVR") + 
+  guides(color = guide_legend(override.aes = list(size = 3), ncol = 1)) + 
+  theme(plot.title = element_text(hjust = .5, size = 14, face = "bold")) 
+
+p1 + p2 + p3
+
+ggsave(file.path(OUTPATH, "plots/benchmark_DR.umap.celltype.png"), width = 13, height = 4, units = "in", dpi = 600)
 ```
 
 ```{r, fig.width=13, fig.height=4}
@@ -292,8 +387,8 @@ ggsave(file.path(OUTPATH, "plots/benchmark_DR.LISI.png"), width = 5, height = 4,
 
 ```{r}
 OUTPATH <- "case3_data/"
-seu <- readRDS(file.path(OUTPATH, "output.neonatal_testis.germ_cells.rds"))
-counts <- seu[["RNA"]]@counts
+seu.germ <- readRDS(file.path(OUTPATH, "output.neonatal_testis.germ_cells.rds"))
+counts <- seu.germ[["RNA"]]@counts
 expr.in.cells <- Matrix::rowSums(counts > 0)
 
 ribo.genes <- readLines("mTCA_data/MGI_GO_ribosomal_subunit.txt")
@@ -341,7 +436,7 @@ colnames(usage) <- paste0("Usage_", colnames(usage))
 usage <- apply(usage, 1, function(xx) xx/sum(xx)) %>% t()
 colnames(usage) <- sub("Usage_", "Program ", colnames(usage))
 
-emb <- FetchData(seu, vars = c("UMAP_1", "UMAP_2"))
+emb <- FetchData(seu.germ, vars = c("UMAP_1", "UMAP_2"))
 
 data.plot <- cbind(emb, usage[rownames(emb), ])
 data.plot <- data.plot %>% 
@@ -393,7 +488,7 @@ ggsave(file.path(OUTPATH, "plots/cnmf.usage.plots.selected.png"), width = 21, he
 ```{r, fig.width=21, fig.height=3}
 genes.use <- c("Dnmt3l", "Ldha", "Id4", "Neurog3", "Dmrtb1", "Prdm9")
 
-data.plot.2 <- FetchData(seu, vars = c("UMAP_1", "UMAP_2", genes.use))
+data.plot.2 <- FetchData(seu.germ, vars = c("UMAP_1", "UMAP_2", genes.use))
 
 data.plot.2 <- data.plot.2 %>% 
   pivot_longer(cols = 3:ncol(.), names_to = "gene", values_to = "Expr")
@@ -423,8 +518,8 @@ ggsave(file.path(OUTPATH, "plots/cnmf.genes.plots.selected.png"), width = 21, he
 
 ### 6.4 Change by days/celltype
 
-```{r, fig.width=12, fig.height=6}
-data.plot <-FetchData(seu, vars = c("Dpp", "celltype.svm"))
+```{r, fig.width=21, fig.height=3}
+data.plot <-FetchData(seu.germ, vars = c("Dpp", "celltype.svm"))
 data.plot <- cbind(usage[rownames(data.plot), program.use], data.plot)
 
 data.plot <- data.plot %>% 
@@ -432,23 +527,20 @@ data.plot <- data.plot %>%
 
 data.plot %>% 
   mutate(component = factor(component, levels = program.use)) %>% 
-  group_split(component) %>% 
-  map(
-    ~ggplot(., aes(Dpp, fill = score > .2)) + 
-      geom_bar(position = "fill") +
-      scale_fill_manual(values = c("grey", "red")) + 
-      scale_y_continuous(labels = scales::percent) + 
-      ylab("% of cells") + 
-      facet_grid(~ component, labeller = function(x) label_value(x, multi_line = FALSE)) + 
-      theme_bw(base_size = 15) + 
-      theme(panel.grid = element_blank(),
-            legend.position = "none",
-            strip.background = element_blank(),
-            strip.text = element_text(face = "bold", vjust = 1, size = 18))
-  ) %>% 
-  cowplot::plot_grid(plotlist = ., align = 'hv', nrow = 2)
+  ggplot(aes(Dpp, fill = score > .2)) + 
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = c("grey", "red")) + 
+  scale_y_continuous(labels = scales::percent) + 
+  ylab("% of cells") + 
+  facet_grid(~ component) +
+  theme_bw(base_size = 18) + 
+  theme(panel.grid = element_blank(),
+        legend.position = "none",
+        strip.background = element_blank(),
+        axis.text = element_text(color = "black"),
+        strip.text = element_text(face = "bold", vjust = 1, size = 21))
 
-ggsave(file.path(OUTPATH, "plots/cnmf.activated_cells_by_days.png"), width = 12, height = 6, dpi = 600)
+ggsave(file.path(OUTPATH, "plots/cnmf.activated_cells_by_days.png"), width = 21, height = 3, dpi = 600)
 ```
 
 ```{r, fig.width=7, fig.height=4}
@@ -554,4 +646,76 @@ SaveH5Seurat(seu.velo, filename = file.path(OUTPATH, "velocyto.neonatal_testis.g
 Convert(file.path(OUTPATH, "velocyto.neonatal_testis.germ_cells.h5Seurat"), dest = "h5ad")
 ```
 
+## 8. Cell cycle
+
+```{r, fig.width=4, fig.height=4}
+seu <- readRDS("case3_data/output.neonatal_testis.germ_cells.rds")
+s.genes <- Hmisc::capitalize(tolower(cc.genes$s.genes))
+g2m.genes <- Hmisc::capitalize(tolower(cc.genes$g2m.genes))
+seu <- CellCycleScoring(seu, s.features = s.genes, g2m.features = g2m.genes)
+
+DimPlot(seu, reduction = "umap_pred", group.by = "Phase") + 
+  theme(legend.position = c(0.05, 0.85))
+ggsave(file.path(OUTPATH, "plots/cellcycle.phase.png"), width = 4, height = 4, units = "in", dpi = 600)
+
+cells <- rownames(subset(seu@meta.data, celltype.svm == "Transitional prospermatogonia"))
+DimPlot(seu, reduction = "umap_pred", group.by = "Dpp", cells = cells)
+```
+
+
+```{r, fig.width=7, fig.height=5}
+data.plot <- FetchData(seu, vars = c("S.Score", "G2M.Score", "celltype.svm"))
+
+ggplot(data.plot, aes(S.Score, G2M.Score, color = celltype.svm)) + 
+  geom_point(show.legend = F) + 
+  ggsci::scale_color_d3() + 
+  theme_bw(base_size = 15) + 
+  theme(axis.text = element_text(color = "black"))
+ggsave(file.path(OUTPATH, "plots/cellcycle.score.scatter.png"), width = 5, height = 5, units = "in", dpi = 600)
+```
+
+```{r, fig.width=4, fig.height=4}
+data.stat <- FetchData(seu, vars = c("celltype.svm", "Phase", "Dpp"))
+
+data.stat <- data.stat %>% 
+  filter(Dpp %in% 6:10) %>% 
+  group_by(Phase, celltype.svm) %>% 
+  summarise(ncells = n()) %>% 
+  ungroup() %>% 
+  filter(Phase == "G1")
+
+data.stat <- arrange(data.stat, desc(ncells))
+myLabel = as.vector(data.stat$celltype.svm)
+myLabel = paste(myLabel, "(", round(data.stat$ncells / sum(data.stat$ncells) * 100, 2), "%)", sep = "")   
+
+ggplot(data.stat, aes("", ncells, fill = celltype.svm)) + 
+  geom_col(show.legend = F) + 
+  ggsci::scale_fill_d3() + 
+  coord_polar(theta = "y") +
+  ggtitle("6-10 dpp (G1 phase)") + 
+  theme_void(base_size = 15) + 
+  theme(plot.title = element_text(hjust = .5, face = "bold"))
+
+ggsave(file.path(OUTPATH, "plots/cellcycle.6-10dppG1.celltype.png"), width = 4, height = 4)
+```
+
+
+```{r, fig.width=8, fig.height=4}
+data.plot <- FetchData(seu, vars = c("Phase", "celltype.svm"))
+data.plot$celltype.svm <- forcats::fct_rev(data.plot$celltype.svm)
+
+ggplot(data.plot, aes(celltype.svm, fill = Phase)) + 
+  geom_bar(position = "fill") + 
+  scale_y_continuous(labels = scales::percent) + 
+  xlab("") + ylab("% of cells") + 
+  coord_flip() + 
+  theme_classic(base_size = 15) + 
+  theme(axis.text = element_text(color = "black"))
+
+ggsave(file.path(OUTPATH, "plots/cellcycle.phase_vs_celltype.png"), width = 8, height = 4, units = "in", dpi = 600)
+```
+
+```{r eval=FALSE}
+saveRDS(seu, file = file.path(OUTPATH, "output.neonatal_testis.germ_cells.rds"))
+```
 
